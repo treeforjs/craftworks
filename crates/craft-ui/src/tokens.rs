@@ -17,9 +17,9 @@ pub enum Appearance {
     Dark,
     /// A softer dark: mid greys instead of near-black, for long sessions.
     Dim,
-    /// Warm paper tones with a red accent: light, but easier on the eyes than white.
-    #[serde(alias = "Cream")]
-    Paper,
+    /// Off-white with a faint rose warmth and a red accent: light, but easier on the eyes than white.
+    #[serde(alias = "Cream", alias = "Paper")]
+    Warm,
     /// Dark with maximum contrast and a yellow accent.
     HighContrast,
 }
@@ -27,7 +27,7 @@ pub enum Appearance {
 impl Appearance {
     /// Every choice, in the order Settings shows them.
     pub const ALL: [Appearance; 6] =
-        [Appearance::System, Appearance::Light, Appearance::Paper, Appearance::Dim, Appearance::Dark, Appearance::HighContrast];
+        [Appearance::System, Appearance::Light, Appearance::Warm, Appearance::Dim, Appearance::Dark, Appearance::HighContrast];
 
     /// The label Settings shows.
     pub fn label(self) -> &'static str {
@@ -36,7 +36,7 @@ impl Appearance {
             Appearance::Light => "Light",
             Appearance::Dark => "Dark",
             Appearance::Dim => "Dim",
-            Appearance::Paper => "Paper",
+            Appearance::Warm => "Warm",
             Appearance::HighContrast => "High contrast",
         }
     }
@@ -48,7 +48,7 @@ impl Appearance {
             Appearance::Light => "light",
             Appearance::Dark => "dark",
             Appearance::Dim => "dim",
-            Appearance::Paper => "paper",
+            Appearance::Warm => "warm",
             Appearance::HighContrast => "high-contrast",
         }
     }
@@ -67,7 +67,7 @@ impl Appearance {
             "dark" | "night" => Appearance::Dark,
             // older builds' mid greys ("Medium", "Medium Dark", "ProMedium", "grey") were the dim choice
             "dim" | "medium" | "mediumdark" | "promedium" | "grey" | "gray" | "dusk" => Appearance::Dim,
-            "paper" | "cream" | "ivory" | "warm" | "sepia" => Appearance::Paper,
+            "warm" | "paper" | "cream" | "ivory" | "sepia" => Appearance::Warm,
             "highcontrast" | "contrast" | "hc" => Appearance::HighContrast,
             _ if n.contains("contrast") => Appearance::HighContrast,
             _ if n.contains("light") => Appearance::Light,
@@ -86,7 +86,7 @@ impl Appearance {
             Appearance::Light => Mode::Light,
             Appearance::Dark => Mode::Dark,
             Appearance::Dim => Mode::Dim,
-            Appearance::Paper => Mode::Paper,
+            Appearance::Warm => Mode::Warm,
             Appearance::HighContrast => Mode::HighContrast,
             Appearance::System => match system {
                 Some(egui::Theme::Light) => Mode::Light,
@@ -108,9 +108,9 @@ pub enum Mode {
     Dark,
     /// Mid-grey surfaces, light text: between Light and Dark.
     Dim,
-    /// Warm off-white paper surfaces, dark brown text, red accent.
-    #[serde(alias = "Cream")]
-    Paper,
+    /// Off-white surfaces with a faint rose warmth, dark brown text, red accent.
+    #[serde(alias = "Cream", alias = "Paper")]
+    Warm,
     /// Black surfaces, white text, yellow accent.
     HighContrast,
 }
@@ -118,7 +118,7 @@ pub enum Mode {
 impl Mode {
     /// True for the modes drawn on dark surfaces.
     pub fn is_dark(self) -> bool {
-        !matches!(self, Mode::Light | Mode::Paper)
+        !matches!(self, Mode::Light | Mode::Warm)
     }
 }
 
@@ -376,17 +376,17 @@ impl Tokens {
                 danger: hex(0xF58585),
                 shadow: Color32::from_black_alpha(90),
             },
-            Mode::Paper => Self {
+            Mode::Warm => Self {
                 mode,
                 density,
-                bg: hex(0xF8F6F1),
-                surface: hex(0xFCFBF7),
-                surface_raised: hex(0xFEFDFA),
-                field: hex(0xFFFEFC),
-                border: hex(0xE2DDD2),
-                divider: hex(0xEEEAE2),
-                hover: hex(0xF2EEE6),
-                pressed: hex(0xE9E3D8),
+                bg: hex(0xF9F2EE),
+                surface: hex(0xFCF7F4),
+                surface_raised: hex(0xFEFBF9),
+                field: hex(0xFFFDFC),
+                border: hex(0xE8D9D0),
+                divider: hex(0xF1E5DF),
+                hover: hex(0xF4E9E3),
+                pressed: hex(0xECDCD3),
                 text: hex(0x2A221B),
                 text_muted: hex(0x5C5045),
                 text_faint: hex(0x665A4E),
@@ -465,7 +465,7 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
 mod tests {
     use super::*;
 
-    const MODES: [Mode; 5] = [Mode::Light, Mode::Paper, Mode::Dim, Mode::Dark, Mode::HighContrast];
+    const MODES: [Mode; 5] = [Mode::Light, Mode::Warm, Mode::Dim, Mode::Dark, Mode::HighContrast];
 
     #[test]
     fn contrast_meets_wcag_aa() {
@@ -518,18 +518,20 @@ mod tests {
             ("studio-light", Appearance::Light),
             ("AdwaitaDark", Appearance::Dark),
             ("high_contrast", Appearance::HighContrast),
-            ("Sepia", Appearance::Paper),
-            ("warm", Appearance::Paper),
-            ("cream", Appearance::Paper),
-            ("Cream", Appearance::Paper),
-            ("ivory", Appearance::Paper),
+            ("Sepia", Appearance::Warm),
+            ("warm", Appearance::Warm),
+            ("cream", Appearance::Warm),
+            ("paper", Appearance::Warm),
+            ("Cream", Appearance::Warm),
+            ("ivory", Appearance::Warm),
         ] {
             assert_eq!(Appearance::parse(old), Some(new), "{old}");
         }
         assert_eq!(Appearance::parse(""), None);
-        // Settings saved while the theme was called Cream still load.
-        assert_eq!(serde_json::from_str::<Appearance>("\"Cream\"").ok(), Some(Appearance::Paper));
-        assert_eq!(serde_json::from_str::<Mode>("\"Cream\"").ok(), Some(Mode::Paper));
+        // Settings saved while the theme was called Cream or Paper still load.
+        assert_eq!(serde_json::from_str::<Appearance>("\"Cream\"").ok(), Some(Appearance::Warm));
+        assert_eq!(serde_json::from_str::<Mode>("\"Cream\"").ok(), Some(Mode::Warm));
+        assert_eq!(serde_json::from_str::<Appearance>("\"Paper\"").ok(), Some(Appearance::Warm));
         assert_eq!(Appearance::parse("teal"), None);
     }
 
