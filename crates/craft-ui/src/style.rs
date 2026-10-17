@@ -12,7 +12,7 @@ fn key() -> egui::Id {
 /// What the user chose in Settings › Appearance, plus the app's dark preference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Theme {
-    /// System, Light, Dark or High contrast.
+    /// System, Light, Cream, Dim, Dark or High contrast.
     pub appearance: Appearance,
     /// Comfortable or Compact.
     pub density: Density,

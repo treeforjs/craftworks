@@ -15,13 +15,18 @@ pub enum Appearance {
     Light,
     /// Always dark.
     Dark,
+    /// A softer dark: mid greys instead of near-black, for long sessions.
+    Dim,
+    /// Warm paper tones with a red accent: light, but easier on the eyes than white.
+    Cream,
     /// Dark with maximum contrast and a yellow accent.
     HighContrast,
 }
 
 impl Appearance {
     /// Every choice, in the order Settings shows them.
-    pub const ALL: [Appearance; 4] = [Appearance::System, Appearance::Light, Appearance::Dark, Appearance::HighContrast];
+    pub const ALL: [Appearance; 6] =
+        [Appearance::System, Appearance::Light, Appearance::Cream, Appearance::Dim, Appearance::Dark, Appearance::HighContrast];
 
     /// The label Settings shows.
     pub fn label(self) -> &'static str {
@@ -29,6 +34,8 @@ impl Appearance {
             Appearance::System => "System",
             Appearance::Light => "Light",
             Appearance::Dark => "Dark",
+            Appearance::Dim => "Dim",
+            Appearance::Cream => "Cream",
             Appearance::HighContrast => "High contrast",
         }
     }
@@ -39,6 +46,8 @@ impl Appearance {
             Appearance::System => "system",
             Appearance::Light => "light",
             Appearance::Dark => "dark",
+            Appearance::Dim => "dim",
+            Appearance::Cream => "cream",
             Appearance::HighContrast => "high-contrast",
         }
     }
@@ -55,6 +64,9 @@ impl Appearance {
             "system" | "auto" | "os" => Appearance::System,
             "light" | "day" => Appearance::Light,
             "dark" | "night" => Appearance::Dark,
+            // older builds' mid greys ("Medium", "Medium Dark", "ProMedium", "grey") were the dim choice
+            "dim" | "medium" | "mediumdark" | "promedium" | "grey" | "gray" | "dusk" => Appearance::Dim,
+            "cream" | "warm" | "sepia" | "paper" => Appearance::Cream,
             "highcontrast" | "contrast" | "hc" => Appearance::HighContrast,
             _ if n.contains("contrast") => Appearance::HighContrast,
             _ if n.contains("light") => Appearance::Light,
@@ -72,6 +84,8 @@ impl Appearance {
         match self {
             Appearance::Light => Mode::Light,
             Appearance::Dark => Mode::Dark,
+            Appearance::Dim => Mode::Dim,
+            Appearance::Cream => Mode::Cream,
             Appearance::HighContrast => Mode::HighContrast,
             Appearance::System => match system {
                 Some(egui::Theme::Light) => Mode::Light,
@@ -91,6 +105,10 @@ pub enum Mode {
     Light,
     /// Dark surfaces, light text.
     Dark,
+    /// Mid-grey surfaces, light text: between Light and Dark.
+    Dim,
+    /// Warm cream surfaces, dark brown text, red accent.
+    Cream,
     /// Black surfaces, white text, yellow accent.
     HighContrast,
 }
@@ -98,7 +116,7 @@ pub enum Mode {
 impl Mode {
     /// True for the modes drawn on dark surfaces.
     pub fn is_dark(self) -> bool {
-        !matches!(self, Mode::Light)
+        !matches!(self, Mode::Light | Mode::Cream)
     }
 }
 
@@ -278,24 +296,24 @@ impl Tokens {
             Mode::Light => Self {
                 mode,
                 density,
-                bg: hex(0xF4F4F6),
-                surface: hex(0xFFFFFF),
-                surface_raised: hex(0xFFFFFF),
-                field: hex(0xFFFFFF),
-                border: hex(0xD4D4DA),
-                divider: hex(0xE6E6EA),
-                hover: hex(0xEEEEF2),
-                pressed: hex(0xE2E2E8),
+                bg: hex(0xE8E8EC),
+                surface: hex(0xF3F3F5),
+                surface_raised: hex(0xF8F8F9),
+                field: hex(0xFAFAFB),
+                border: hex(0xC8C8D0),
+                divider: hex(0xDADAE0),
+                hover: hex(0xE2E2E7),
+                pressed: hex(0xD6D6DD),
                 text: hex(0x1D1D21),
-                text_muted: hex(0x55555F),
-                text_faint: hex(0x686872),
+                text_muted: hex(0x4C4C56),
+                text_faint: hex(0x5A5A64),
                 text_disabled: hex(0xA4A4AC),
                 text_on_accent: hex(0xFFFFFF),
                 icon: hex(0x44444C),
                 accent: hex(0x4F5BD5),
                 accent_hover: hex(0x4350C6),
                 accent_text: hex(0x3E49BD),
-                accent_soft: hex(0xE8EAFC),
+                accent_soft: hex(0xDCDFF7),
                 focus: hex(0x4F5BD5),
                 success: hex(0x1B7F45),
                 warning: hex(0xA35F00),
@@ -328,6 +346,60 @@ impl Tokens {
                 warning: hex(0xE7A13A),
                 danger: hex(0xF06A6A),
                 shadow: Color32::from_black_alpha(110),
+            },
+            Mode::Dim => Self {
+                mode,
+                density,
+                bg: hex(0x232328),
+                surface: hex(0x2A2A30),
+                surface_raised: hex(0x333339),
+                field: hex(0x1F1F24),
+                border: hex(0x4A4A53),
+                divider: hex(0x393940),
+                hover: hex(0x36363D),
+                pressed: hex(0x414149),
+                text: hex(0xEEEEF1),
+                text_muted: hex(0xBDBDC6),
+                text_faint: hex(0xAEAEB8),
+                text_disabled: hex(0x6E6E77),
+                text_on_accent: hex(0xFFFFFF),
+                icon: hex(0xD2D2DA),
+                accent: hex(0x5A66E6),
+                accent_hover: hex(0x4C58D6),
+                accent_text: hex(0xB4BBFF),
+                accent_soft: hex(0x3B4070),
+                focus: hex(0x9EA6FF),
+                success: hex(0x62CF8F),
+                warning: hex(0xECAE52),
+                danger: hex(0xF58585),
+                shadow: Color32::from_black_alpha(90),
+            },
+            Mode::Cream => Self {
+                mode,
+                density,
+                bg: hex(0xEFE7D8),
+                surface: hex(0xF7F1E5),
+                surface_raised: hex(0xFBF7EE),
+                field: hex(0xFDFAF3),
+                border: hex(0xD6CCB8),
+                divider: hex(0xE3DAC8),
+                hover: hex(0xEAE0CD),
+                pressed: hex(0xE0D4BE),
+                text: hex(0x2A221B),
+                text_muted: hex(0x5C5045),
+                text_faint: hex(0x665A4E),
+                text_disabled: hex(0xABA092),
+                text_on_accent: hex(0xFFFFFF),
+                icon: hex(0x4A3F35),
+                accent: hex(0xB3261E),
+                accent_hover: hex(0x9C1F18),
+                accent_text: hex(0x9E2119),
+                accent_soft: hex(0xF3D9D2),
+                focus: hex(0xB3261E),
+                success: hex(0x2E7D46),
+                warning: hex(0x9A5B00),
+                danger: hex(0x8E1B2C),
+                shadow: Color32::from_black_alpha(30),
             },
             Mode::HighContrast => Self {
                 mode,
@@ -391,7 +463,7 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
 mod tests {
     use super::*;
 
-    const MODES: [Mode; 3] = [Mode::Light, Mode::Dark, Mode::HighContrast];
+    const MODES: [Mode; 5] = [Mode::Light, Mode::Cream, Mode::Dim, Mode::Dark, Mode::HighContrast];
 
     #[test]
     fn contrast_meets_wcag_aa() {
@@ -437,12 +509,15 @@ mod tests {
     fn older_theme_names_map_to_the_nearest_choice() {
         for (old, new) in [
             ("darkest", Appearance::Dark),
-            ("Medium Dark", Appearance::Dark),
+            ("Medium Dark", Appearance::Dim),
+            ("medium", Appearance::Dim),
             ("medium-light", Appearance::Light),
-            ("ProMedium", Appearance::Dark),
+            ("ProMedium", Appearance::Dim),
             ("studio-light", Appearance::Light),
             ("AdwaitaDark", Appearance::Dark),
             ("high_contrast", Appearance::HighContrast),
+            ("Sepia", Appearance::Cream),
+            ("warm", Appearance::Cream),
         ] {
             assert_eq!(Appearance::parse(old), Some(new), "{old}");
         }
