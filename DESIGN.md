@@ -47,13 +47,13 @@ layouts named by the task), never a long list of vendor workspace names.
 Defined in [`src/tokens.rs`](crates/craft-ui/src/tokens.rs); apps add domain tokens (timeline, keyframes, colour
 labels) derived from these, never their own greys.
 
-- **Appearance:** System (default), Light, Cream, Dim, Dark, High contrast. None but High
-  contrast uses pure white or pure black: Light is off-white, Cream is a soft ivory with a red
+- **Appearance:** System (default), Light, Paper, Dim, Dark, High contrast. None but High
+  contrast uses pure white or pure black: Light is off-white, Paper is a warm off-white with a red
   accent, Dim is mid grey for long sessions. Photo, video and motion apps
   pass `prefer_dark` so System draws dark when the OS says nothing. Older builds' theme names
   map with `Appearance::parse`.
 - **Colour:** cool neutral greys and one accent, Craft Indigo (#4F5BD5 light, #5A66E6 dark
-  and dim, red #B3261E in Cream, yellow #FFD23F in High contrast). Status colours (success, warning, danger) are for status
+  and dim, red #B3261E in Paper, yellow #FFD23F in High contrast). Status colours (success, warning, danger) are for status
   only.
 - **Type:** Inter for the UI, JetBrains Mono for changing numbers. Caption 11, small 12, body 13,
   title 15 semibold, heading 18 semibold. Font files stay in each app (or craft-fonts); call
@@ -96,7 +96,7 @@ keymap preset with its previous full map.
 | --- | --- |
 | Preferences | Settings |
 | Workspace (Essentials, Painting, Assembly…) | Layout (Default, Focus, task names) |
-| Interface brightness levels | Appearance: System, Light, Cream, Dim, Dark, High contrast |
+| Interface brightness levels | Appearance: System, Light, Paper, Dim, Dark, High contrast |
 | A Window menu of 30+ panels | Panels from the palette, the inspector or View › Panels |
 | Labels ending in a colon ("Size:") | "Size" |
 | Tab titles like "name @ 12.5% (RGB/8)" | "name"; zoom and mode in the status bar |

@@ -18,7 +18,8 @@ pub enum Appearance {
     /// A softer dark: mid greys instead of near-black, for long sessions.
     Dim,
     /// Warm paper tones with a red accent: light, but easier on the eyes than white.
-    Cream,
+    #[serde(alias = "Cream")]
+    Paper,
     /// Dark with maximum contrast and a yellow accent.
     HighContrast,
 }
@@ -26,7 +27,7 @@ pub enum Appearance {
 impl Appearance {
     /// Every choice, in the order Settings shows them.
     pub const ALL: [Appearance; 6] =
-        [Appearance::System, Appearance::Light, Appearance::Cream, Appearance::Dim, Appearance::Dark, Appearance::HighContrast];
+        [Appearance::System, Appearance::Light, Appearance::Paper, Appearance::Dim, Appearance::Dark, Appearance::HighContrast];
 
     /// The label Settings shows.
     pub fn label(self) -> &'static str {
@@ -35,7 +36,7 @@ impl Appearance {
             Appearance::Light => "Light",
             Appearance::Dark => "Dark",
             Appearance::Dim => "Dim",
-            Appearance::Cream => "Cream",
+            Appearance::Paper => "Paper",
             Appearance::HighContrast => "High contrast",
         }
     }
@@ -47,7 +48,7 @@ impl Appearance {
             Appearance::Light => "light",
             Appearance::Dark => "dark",
             Appearance::Dim => "dim",
-            Appearance::Cream => "cream",
+            Appearance::Paper => "paper",
             Appearance::HighContrast => "high-contrast",
         }
     }
@@ -66,7 +67,7 @@ impl Appearance {
             "dark" | "night" => Appearance::Dark,
             // older builds' mid greys ("Medium", "Medium Dark", "ProMedium", "grey") were the dim choice
             "dim" | "medium" | "mediumdark" | "promedium" | "grey" | "gray" | "dusk" => Appearance::Dim,
-            "cream" | "warm" | "sepia" | "paper" => Appearance::Cream,
+            "paper" | "cream" | "ivory" | "warm" | "sepia" => Appearance::Paper,
             "highcontrast" | "contrast" | "hc" => Appearance::HighContrast,
             _ if n.contains("contrast") => Appearance::HighContrast,
             _ if n.contains("light") => Appearance::Light,
@@ -85,7 +86,7 @@ impl Appearance {
             Appearance::Light => Mode::Light,
             Appearance::Dark => Mode::Dark,
             Appearance::Dim => Mode::Dim,
-            Appearance::Cream => Mode::Cream,
+            Appearance::Paper => Mode::Paper,
             Appearance::HighContrast => Mode::HighContrast,
             Appearance::System => match system {
                 Some(egui::Theme::Light) => Mode::Light,
@@ -107,8 +108,9 @@ pub enum Mode {
     Dark,
     /// Mid-grey surfaces, light text: between Light and Dark.
     Dim,
-    /// Warm cream surfaces, dark brown text, red accent.
-    Cream,
+    /// Warm off-white paper surfaces, dark brown text, red accent.
+    #[serde(alias = "Cream")]
+    Paper,
     /// Black surfaces, white text, yellow accent.
     HighContrast,
 }
@@ -116,7 +118,7 @@ pub enum Mode {
 impl Mode {
     /// True for the modes drawn on dark surfaces.
     pub fn is_dark(self) -> bool {
-        !matches!(self, Mode::Light | Mode::Cream)
+        !matches!(self, Mode::Light | Mode::Paper)
     }
 }
 
@@ -374,17 +376,17 @@ impl Tokens {
                 danger: hex(0xF58585),
                 shadow: Color32::from_black_alpha(90),
             },
-            Mode::Cream => Self {
+            Mode::Paper => Self {
                 mode,
                 density,
-                bg: hex(0xF5F1E8),
-                surface: hex(0xFAF7F1),
-                surface_raised: hex(0xFDFBF7),
-                field: hex(0xFFFDFA),
-                border: hex(0xDDD5C6),
-                divider: hex(0xEAE4D8),
-                hover: hex(0xEFE9DE),
-                pressed: hex(0xE5DDCF),
+                bg: hex(0xF8F6F1),
+                surface: hex(0xFCFBF7),
+                surface_raised: hex(0xFEFDFA),
+                field: hex(0xFFFEFC),
+                border: hex(0xE2DDD2),
+                divider: hex(0xEEEAE2),
+                hover: hex(0xF2EEE6),
+                pressed: hex(0xE9E3D8),
                 text: hex(0x2A221B),
                 text_muted: hex(0x5C5045),
                 text_faint: hex(0x665A4E),
@@ -394,7 +396,7 @@ impl Tokens {
                 accent: hex(0xB3261E),
                 accent_hover: hex(0x9C1F18),
                 accent_text: hex(0x9E2119),
-                accent_soft: hex(0xF6DDD7),
+                accent_soft: hex(0xF8E2DD),
                 focus: hex(0xB3261E),
                 success: hex(0x2E7D46),
                 warning: hex(0x9A5B00),
@@ -463,7 +465,7 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
 mod tests {
     use super::*;
 
-    const MODES: [Mode; 5] = [Mode::Light, Mode::Cream, Mode::Dim, Mode::Dark, Mode::HighContrast];
+    const MODES: [Mode; 5] = [Mode::Light, Mode::Paper, Mode::Dim, Mode::Dark, Mode::HighContrast];
 
     #[test]
     fn contrast_meets_wcag_aa() {
@@ -516,12 +518,18 @@ mod tests {
             ("studio-light", Appearance::Light),
             ("AdwaitaDark", Appearance::Dark),
             ("high_contrast", Appearance::HighContrast),
-            ("Sepia", Appearance::Cream),
-            ("warm", Appearance::Cream),
+            ("Sepia", Appearance::Paper),
+            ("warm", Appearance::Paper),
+            ("cream", Appearance::Paper),
+            ("Cream", Appearance::Paper),
+            ("ivory", Appearance::Paper),
         ] {
             assert_eq!(Appearance::parse(old), Some(new), "{old}");
         }
         assert_eq!(Appearance::parse(""), None);
+        // Settings saved while the theme was called Cream still load.
+        assert_eq!(serde_json::from_str::<Appearance>("\"Cream\"").ok(), Some(Appearance::Paper));
+        assert_eq!(serde_json::from_str::<Mode>("\"Cream\"").ok(), Some(Mode::Paper));
         assert_eq!(Appearance::parse("teal"), None);
     }
 
