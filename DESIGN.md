@@ -48,7 +48,7 @@ Defined in [`src/tokens.rs`](crates/craft-ui/src/tokens.rs); apps add domain tok
 labels) derived from these, never their own greys.
 
 - **Appearance:** System (default), Light, Cream, Dim, Dark, High contrast. None but High
-  contrast uses pure white or pure black: Light is off-white, Cream is warm paper with a red
+  contrast uses pure white or pure black: Light is off-white, Cream is a soft ivory with a red
   accent, Dim is mid grey for long sessions. Photo, video and motion apps
   pass `prefer_dark` so System draws dark when the OS says nothing. Older builds' theme names
   map with `Appearance::parse`.
