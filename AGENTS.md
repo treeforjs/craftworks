@@ -11,7 +11,9 @@ Craftworks holds what every craft app shares. Today that is `crates/craft-ui`, t
 - **No assets here.** No font files (they live in craft-fonts or the apps), no icon files (apps
   register a painter).
 - **No app dependencies.** craft-ui depends only on egui and serde, and builds for wasm32.
-- **Releases:** a breaking change bumps the minor version; each release gets a `craft-ui-vX.Y.Z` tag, and apps pin tags.
+  craft-update has no UI dependency; its network and installer code is desktop-only, the rest
+  builds for wasm32. Never weaken its verification (signed list first, hash every download).
+- **Releases:** a breaking change bumps the minor version; each release gets a `<crate>-vX.Y.Z` tag (`craft-ui-v0.1.0`, `craft-update-v0.1.0`), and apps pin tags.
 - Gates before every commit: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test`, `cargo check --target wasm32-unknown-unknown`. Look at the gallery screenshots
   for any visual change.
