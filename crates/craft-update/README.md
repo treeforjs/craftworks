@@ -1,0 +1,62 @@
+# craft-update
+
+In-app updates for the craft apps, the same way in every app: look for a newer release on
+GitHub, download the file that matches how this copy was installed, verify it, and install it
+when the app quits (or restart into it right away).
+
+| Installed with | Updates by |
+| --- | --- |
+| Windows installer (`.msi`) | running the new `.msi` after the app quits (`msiexec /passive`), then reopening the app |
+| AppImage | replacing the AppImage file in place (atomic rename), then reopening it |
+| `.deb` / `.rpm` | the system package manager through `pkexec` (asks for a password) |
+| Windows portable zip, Flatpak, tarball, macOS, source builds | not in place: the app offers the release page |
+
+## Trust
+
+Every release carries `SHA256SUMS.txt` (the release workflows already write it) and
+`SHA256SUMS.txt.sig`, an Ed25519 signature of that list. The app carries the public key. The
+updater downloads and checks the signed list first, downloads the installer only if its name is
+in that list, hashes it while it arrives, and throws it away unless the hash matches. Only
+links inside the app's own repository's release are followed, only versions newer than the
+running one are offered, and because the version is part of each signed file name, an old
+signed release can't be replayed as a new one.
+
+An app built without a public key (or a release without a signature) still says a new version
+exists and links to its page; it just never installs anything itself.
+
+## Use
+
+```toml
+craft-update = { git = "https://github.com/treeforjs/craftworks", tag = "craft-update-v0.1.0" }
+```
+
+```rust
+let app = craft_update::AppInfo {
+    id: "pdfcraft".into(),
+    display_name: "PdfCraft".into(),
+    repo: "treeforjs/pdfcraft".into(),
+    current: env!("CARGO_PKG_VERSION").into(),
+    public_key: option_env!("CRAFT_UPDATE_PUBLIC_KEY").map(Into::into),
+    prereleases: false,
+};
+let mut updater = craft_update::Updater::new(app, Arc::new(craft_update::GitHub::new("PdfCraft/1.2.0")));
+updater.on_change(move || ctx.request_repaint());
+
+// Once started (never before the first frame): a background check when one is due.
+if settings.updates.due(craft_update::AutoCheck::now()) { /* after START_DELAY_SECS */ updater.check(); }
+
+// Every frame: pick up news and draw `updater.state()`.
+updater.poll();
+
+// On quit, after unsaved work is handled.
+updater.apply(restart)?;
+```
+
+The updater never blocks the UI thread: checks and downloads run on a background thread under
+`catch_unwind`, and the automatic check waits until the app has been up for a few seconds and
+runs at most once a day ([`AutoCheck`](src/schedule.rs)).
+
+## Signing releases
+
+See [`docs/updates.md`](../../docs/updates.md) for the one-time key setup and the release
+workflow step.

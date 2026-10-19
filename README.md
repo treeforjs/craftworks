@@ -8,6 +8,9 @@ DesignCraft and LightCraft.
   their look.
 - [`crates/craft-ui`](crates/craft-ui): that design as code, for egui: tokens, themes and the
   shared components (command palette, Undo toasts, inspector sections, empty states, buttons).
+- [`crates/craft-update`](crates/craft-update): in-app updates (check, download, verify a signed
+  checksum list, install on quit). [`docs/updates.md`](docs/updates.md) covers installers and
+  the signing keys.
 
 ![The shared shell](docs/images/shell-light.png)
 

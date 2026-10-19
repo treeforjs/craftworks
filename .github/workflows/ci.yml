@@ -40,3 +40,17 @@ jobs:
         with:
           name: gallery
           path: target/gallery/*.png
+
+  # The updater's Windows paths (the MSI hand-off) only compile and run on Windows.
+  windows-update:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p craft-update --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p craft-update
