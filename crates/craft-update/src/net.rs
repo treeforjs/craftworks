@@ -81,3 +81,26 @@ impl Source for GitHub {
         }
     }
 }
+
+#[cfg(all(test, feature = "github"))]
+mod tests {
+    use super::*;
+
+    /// Live: asks GitHub over TLS with the OS's roots (`cargo test -p craft-update -- --ignored`).
+    #[test]
+    #[ignore = "needs network access"]
+    fn github_answers_with_a_release_list() {
+        let body = GitHub::new("craft-update-test").get("https://api.github.com/repos/treeforjs/pdfcraft/releases?per_page=5", 4 << 20).unwrap();
+        assert!(body.starts_with(b"["), "{}", String::from_utf8_lossy(&body));
+        assert!(matches!(GitHub::new("x").get("http://api.github.com/", 10), Err(Error::Invalid(_))));
+        // Release downloads redirect to GitHub's object storage; the redirect is followed.
+        let mut got = Vec::new();
+        GitHub::new("craft-update-test")
+            .download("https://github.com/goreleaser/nfpm/releases/download/v2.47.0/checksums.txt", 1 << 20, &mut |c| {
+                got.extend_from_slice(c);
+                Ok(())
+            })
+            .unwrap();
+        assert!(String::from_utf8_lossy(&got).contains("nfpm_2.47.0"), "{}", String::from_utf8_lossy(&got));
+    }
+}

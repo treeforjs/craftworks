@@ -19,7 +19,9 @@ base64 = "0.22"
 # The network and the installers exist only on the desktop; the web build gets version,
 # release and verification logic (and keeps opening the releases page).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ureq = { version = "3", optional = true }
+# rustls with ring and the OS's trusted roots only: no bundled root list (webpki-roots is
+# CDLA-licensed, and the apps keep it out of their trees).
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring"], optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 
 [features]
