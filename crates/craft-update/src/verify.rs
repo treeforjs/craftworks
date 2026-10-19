@@ -77,9 +77,10 @@ fn from_hex(s: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (o, pair) in out.iter_mut().zip(b.chunks_exact(2)) {
-        let hi = (*pair.first()? as char).to_digit(16)?;
-        let lo = (*pair.get(1)? as char).to_digit(16)?;
+    let (pairs, _) = b.as_chunks::<2>();
+    for (o, &[hi, lo]) in out.iter_mut().zip(pairs) {
+        let hi = (hi as char).to_digit(16)?;
+        let lo = (lo as char).to_digit(16)?;
         *o = u8::try_from(hi * 16 + lo).ok()?;
     }
     Some(out)
