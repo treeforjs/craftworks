@@ -28,9 +28,11 @@ One key can serve every craft app, or make one per app.
   secrets*, add `UPDATE_SIGNING_KEY` with the whole contents of `craft-update-key.pem`. Store a
   backup offline: if it is lost, already-installed copies can no longer update themselves (people
   would have to download one new version by hand).
-- **Public key:** add it as the repository *variable* (not secret) `CRAFT_UPDATE_PUBLIC_KEY`
-  in the same place. The release workflow passes it to the build, which embeds it. It is not
-  secret.
+- **Public key:** add it as a *repository* variable (not a secret, and not an environment
+  variable) `CRAFT_UPDATE_PUBLIC_KEY`, under *Settings ▸ Secrets and variables ▸ Actions ▸
+  Variables*. The release workflow passes it to every desktop build, which embeds it. The Linux
+  jobs run without the `release` environment, so an environment variable would leave their
+  packages without the key.
 
 Until both exist, release builds still check for updates and offer the download page, and the
 release still builds unsigned.
