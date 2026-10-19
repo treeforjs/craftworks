@@ -1,4 +1,6 @@
+#[cfg(feature = "github")]
 use std::io::Read;
+#[cfg(feature = "github")]
 use std::time::Duration;
 
 use crate::Error;
@@ -14,10 +16,12 @@ pub trait Source: Send + Sync {
 }
 
 /// GitHub over HTTPS, trusting the certificate authorities the operating system trusts.
+#[cfg(feature = "github")]
 pub struct GitHub {
     user_agent: String,
 }
 
+#[cfg(feature = "github")]
 impl GitHub {
     /// A source that identifies itself as `user_agent` (such as `PdfCraft/1.2.0`).
     pub fn new(user_agent: impl Into<String>) -> GitHub {
@@ -53,6 +57,7 @@ impl GitHub {
     }
 }
 
+#[cfg(feature = "github")]
 impl Source for GitHub {
     fn get(&self, url: &str, limit: u64) -> Result<Vec<u8>, Error> {
         let agent = self.agent(Some(Duration::from_secs(20)))?;

@@ -42,8 +42,10 @@ pub use version::Version;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use install::{Applied, Prepared};
+#[cfg(all(not(target_arch = "wasm32"), feature = "github"))]
+pub use net::GitHub;
 #[cfg(not(target_arch = "wasm32"))]
-pub use net::{GitHub, Source};
+pub use net::Source;
 #[cfg(not(target_arch = "wasm32"))]
 pub use updater::{Offer, State, Updater};
 
