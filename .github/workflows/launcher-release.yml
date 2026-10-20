@@ -90,6 +90,9 @@ jobs:
       - name: Build the current-user installer and portable zip
         shell: pwsh
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
+      - name: Verify complete signed app installations
+        timeout-minutes: 10
+        run: cargo test --locked -p craft-manager --test published_installs -- --ignored --nocapture
       - name: Check the portable binary
         shell: pwsh
         env:
@@ -135,6 +138,9 @@ jobs:
           key: craftworks-linux-${{ matrix.arch }}
       - name: Build and package
         run: bash packaging/linux/package.sh
+      - name: Verify complete signed app installations
+        timeout-minutes: 10
+        run: cargo test --locked -p craft-manager --test published_installs -- --ignored --nocapture
       - name: Check user installation and removal
         env:
           VERSION: ${{ needs.prepare.outputs.version }}

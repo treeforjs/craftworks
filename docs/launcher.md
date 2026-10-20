@@ -27,8 +27,8 @@ On Linux, download `craftworks-<version>-linux-x86_64-setup.sh` (or `aarch64` on
 computer). From the download folder, run it as your normal user:
 
 ```sh
-bash craftworks-0.1.0-linux-x86_64-setup.sh --dry-run
-bash craftworks-0.1.0-linux-x86_64-setup.sh
+bash craftworks-0.1.1-linux-x86_64-setup.sh --dry-run
+bash craftworks-0.1.1-linux-x86_64-setup.sh
 ```
 
 Use the actual downloaded version and architecture in those commands. The setup file contains
@@ -194,7 +194,7 @@ make no GitHub changes. Release from the reviewed commit containing the current 
 3. Bump `apps/craftworks/Cargo.toml` and update `Cargo.lock`. Run the CI checks and test a real
    signed app install and update on both Windows and Linux.
 4. Push the reviewed commit to the `release` branch, or push a matching version tag such as
-   `craftworks-v0.1.0`.
+   `craftworks-v0.1.1`.
    `launcher-release.yml` builds Windows x64 and ARM64 and Linux x86_64 and aarch64, signs the
    checksum list, and creates a draft Craftworks release. A manual workflow dispatch on `release`
    also creates a draft; selecting `main` only builds and checks artifacts. Signing preflight
