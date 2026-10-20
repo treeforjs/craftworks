@@ -163,15 +163,14 @@ workflow validates that all four public keys are present and correctly encoded. 
 `release` environment also needs `UPDATE_SIGNING_KEY`, matching its own public key, to draft a
 release with signed checksums. Operating-system code signing is separate; the initial NSIS
 packaging does not sign the executable or setup file with Authenticode.
-If the `release` environment restricts allowed branches or tags, allow the `craftworks-v*`
-release tags as well.
+If the `release` environment restricts allowed branches or tags, allow the `release` branch
+and the `craftworks-v*` release tags.
 
 ## First release checklist
 
 See [`updates.md`](updates.md) for Linux and Windows key-generation helpers, exact GitHub
 settings and branch/publishing steps. The helpers keep private keys outside the checkout and
-make no GitHub changes. Merge [PR #8](https://github.com/treeforjs/craftworks/pull/8) before
-tagging a release from the default branch so the launcher release workflow is available.
+make no GitHub changes. Release from the reviewed commit containing the current launcher workflow.
 
 1. Configure the app signing keys, then run each app's existing release workflow on its
    `release` branch. Those workflows create **draft** releases; a draft is not visible to
@@ -180,10 +179,12 @@ tagging a release from the default branch so the launcher release workflow is av
 2. Configure the Craftworks repository's matching public keys and its release signing secret.
 3. Bump `apps/craftworks/Cargo.toml` and update `Cargo.lock`. Run the CI checks and test a real
    signed app install and update on both Windows and Linux.
-4. Push a tag matching the launcher version, such as `craftworks-v0.1.0`.
+4. Push the reviewed commit to the `release` branch, or push a matching version tag such as
+   `craftworks-v0.1.0`.
    `launcher-release.yml` builds Windows x64 and ARM64 and Linux x86_64 and aarch64, signs the
-   checksum list, and creates a draft Craftworks release. A manual workflow dispatch builds
-   and checks artifacts without creating a release.
+   checksum list, and creates a draft Craftworks release. A manual workflow dispatch on `release`
+   also creates a draft; selecting `main` only builds and checks artifacts. Signing preflight
+   rejects missing or mismatched private/public keys before the package builds start.
 5. Download the draft installers, check installation, app launches and updates on both
    platforms, then publish the draft. Published version assets must not be replaced.
 
