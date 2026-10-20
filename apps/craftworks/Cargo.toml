@@ -1,0 +1,30 @@
+[package]
+name = "craftworks"
+description = "Install, update and open the Craft apps from one place"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/treeforjs/craftworks"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-ui = { path = "../../crates/craft-ui" }
+craft-update = { path = "../../crates/craft-update" }
+craft-manager = { path = "../../crates/craft-manager" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "x11", "wayland", "persistence"] }
+egui = "0.36"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"

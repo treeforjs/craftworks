@@ -1,0 +1,192 @@
+name: Craftworks release
+
+on:
+  push:
+    tags: ["craftworks-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: craftworks-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CRAFT_UPDATE_PUBLIC_KEY: ${{ vars.CRAFT_UPDATE_PUBLIC_KEY }}
+  CRAFTWORKS_UPDATE_PUBLIC_KEY: ${{ vars.CRAFTWORKS_UPDATE_PUBLIC_KEY }}
+  PDFCRAFT_UPDATE_PUBLIC_KEY: ${{ vars.PDFCRAFT_UPDATE_PUBLIC_KEY }}
+  VECTORCRAFT_UPDATE_PUBLIC_KEY: ${{ vars.VECTORCRAFT_UPDATE_PUBLIC_KEY }}
+  PHOTOCRAFT_UPDATE_PUBLIC_KEY: ${{ vars.PHOTOCRAFT_UPDATE_PUBLIC_KEY }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Validate version and trusted app keys
+        run: |
+          version="$(python3 packaging/version.py)"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "craftworks-v$version" ]]; then
+            echo "::error::The tag must match the Craftworks Cargo.toml version."
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import base64, os
+          for app in ("PDFCRAFT", "VECTORCRAFT", "PHOTOCRAFT", "CRAFTWORKS"):
+              name = f"{app}_UPDATE_PUBLIC_KEY"
+              text = os.environ.get(name) or os.environ.get("CRAFT_UPDATE_PUBLIC_KEY", "")
+              try:
+                  key = base64.b64decode(text.strip(), validate=True)
+                  valid = len(key) == 32 or (len(key) == 44 and key.startswith(bytes.fromhex("302a300506032b6570032100")))
+              except ValueError:
+                  valid = False
+              if not valid:
+                  raise SystemExit(f"::error::Set repository variable {name}, or the shared CRAFT_UPDATE_PUBLIC_KEY, to a base64 Ed25519 public key. See docs/launcher.md.")
+          PY
+
+  windows:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: craftworks-windows-${{ matrix.arch }}
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+      - name: Build the current-user installer and portable zip
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
+      - name: Check the portable binary
+        shell: pwsh
+        run: |
+          $archive = Get-Item dist/release/*-portable.zip
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath target/portable-smoke
+          $binary = Get-ChildItem target/portable-smoke -Filter craftworks.exe -Recurse | Select-Object -First 1
+          if (-not $binary) { throw 'Portable archive has no Craftworks binary.' }
+          & $binary.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw 'Portable binary smoke check failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: craftworks-windows-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  linux:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev desktop-file-utils
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: craftworks-linux-${{ matrix.arch }}
+      - name: Build and package
+        run: bash packaging/linux/package.sh
+      - name: Check user installation and removal
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          target/release/craftworks --version
+          mkdir -p target/install-smoke
+          tar -xzf "dist/release/craftworks-$VERSION-linux-${{ matrix.arch }}.tar.gz" -C target/install-smoke
+          export HOME="$RUNNER_TEMP/craftworks-user"
+          export XDG_DATA_HOME="$HOME/.local/share"
+          bash "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/install.sh"
+          desktop-file-validate "$XDG_DATA_HOME/applications/ai.storyteller.craftworks.desktop"
+          "$HOME/.local/bin/craftworks" --version
+          bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
+          test ! -e "$HOME/.local/bin/craftworks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: craftworks-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/craftworks-v')
+    needs: [prepare, windows, linux]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: craftworks-*
+          path: artifacts
+          merge-multiple: true
+      - name: Sign the release checksum list
+        working-directory: artifacts
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -z "$UPDATE_SIGNING_KEY" ]]; then
+            echo "::error::Set the release environment secret UPDATE_SIGNING_KEY before publishing. See docs/launcher.md."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/craftworks-signing-key.pem"
+          trap 'rm -f -- "$key"' EXIT
+          umask 077
+          printf '%s\n' "$UPDATE_SIGNING_KEY" >"$key"
+          expected="${CRAFTWORKS_UPDATE_PUBLIC_KEY:-$CRAFT_UPDATE_PUBLIC_KEY}"
+          actual="$(openssl pkey -in "$key" -pubout -outform DER | base64 -w0)"
+          # The embedded key may be raw (32 bytes) or SubjectPublicKeyInfo (44 bytes).
+          export EXPECTED_KEY="$expected" ACTUAL_KEY="$actual"
+          python3 - <<'PY'
+          import base64, os
+          def raw(name):
+              key = base64.b64decode(os.environ[name].strip(), validate=True)
+              return key[-32:]
+          if raw("EXPECTED_KEY") != raw("ACTUAL_KEY"):
+              raise SystemExit("::error::UPDATE_SIGNING_KEY does not match the embedded Craftworks public key.")
+          PY
+          sha256sum -- * >SHA256SUMS.txt
+          openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS.txt | base64 -w0 >SHA256SUMS.txt.sig
+          test -s SHA256SUMS.txt.sig
+      - name: Draft a release for review
+        working-directory: artifacts
+        run: |
+          tag="craftworks-v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::A release already exists for $tag; create a new version instead of replacing published files."
+            exit 1
+          fi
+          pre=()
+          [[ "$VERSION" != *-* ]] || pre=(--prerelease)
+          gh release create "$tag" --verify-tag --draft --title "Craftworks $VERSION" \
+            --generate-notes "${pre[@]}" -- *

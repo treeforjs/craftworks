@@ -54,3 +54,40 @@ jobs:
         run: cargo clippy -p craft-update --all-targets -- -D warnings
       - name: Test
         run: cargo test -p craft-update
+
+  launcher:
+    name: Craftworks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p craftworks -p craft-manager --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p craftworks -p craft-manager
+      - name: Build
+        run: cargo build --locked -p craftworks
+      - name: Version (no display server)
+        run: cargo run --locked -p craftworks -- --version
+      - name: Launcher screenshots (software Vulkan)
+        if: runner.os == 'Linux'
+        run: cargo run -p craftworks --example launcher_gallery -- target/launcher-gallery
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: launcher-gallery
+          path: target/launcher-gallery/*.png
+          if-no-files-found: error
