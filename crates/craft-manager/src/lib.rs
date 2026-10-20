@@ -17,6 +17,10 @@ mod manager;
 #[cfg(not(target_arch = "wasm32"))]
 mod package;
 
+/// Discover previous installations and retire them without adopting their files.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod legacy;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use manager::Manager;
 
@@ -33,7 +37,7 @@ pub struct App {
     pub repo: &'static str,
 }
 
-/// Apps managed by Craftworks. Other installations are never discovered or adopted.
+/// Apps managed by Craftworks. Previous installations can be retired but are never adopted.
 pub const APPS: [App; 3] = [
     App { id: "pdfcraft", name: "PdfCraft", summary: "Read, edit and create PDF documents.", repo: "treeforjs/pdfcraft" },
     App { id: "vectorcraft", name: "VectorCraft", summary: "Draw and edit vector artwork.", repo: "treeforjs/vectorcraft" },

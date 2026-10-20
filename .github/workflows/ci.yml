@@ -82,6 +82,22 @@ jobs:
         run: cargo build --locked -p craftworks
       - name: Version (no display server)
         run: cargo run --locked -p craftworks -- --version
+      - name: Signing helper permissions and signature
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          key_dir="$RUNNER_TEMP/craftworks-test-signing-key"
+          bash packaging/signing/new-key.sh "$key_dir"
+          trap 'rm -f -- "$key_dir/craft-update-key.pem" "$key_dir/craft-update-public.der" "$key_dir/craft-update-public-key.txt" "$key_dir/message" "$key_dir/signature"; rmdir -- "$key_dir"' EXIT
+          test "$(stat -c %a "$key_dir")" = 700
+          test "$(stat -c %a "$key_dir/craft-update-key.pem")" = 600
+          printf 'throwaway signing test\n' >"$key_dir/message"
+          openssl pkeyutl -sign -inkey "$key_dir/craft-update-key.pem" -rawin -in "$key_dir/message" -out "$key_dir/signature"
+          openssl pkeyutl -verify -pubin -keyform DER -inkey "$key_dir/craft-update-public.der" -rawin -in "$key_dir/message" -sigfile "$key_dir/signature"
+          if bash packaging/signing/new-key.sh "$key_dir" >/dev/null 2>&1; then
+            echo 'The signing helper replaced an existing key directory.' >&2
+            exit 1
+          fi
       - name: Launcher screenshots (software Vulkan)
         if: runner.os == 'Linux'
         run: cargo run -p craftworks --example launcher_gallery -- target/launcher-gallery

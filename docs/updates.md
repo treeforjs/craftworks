@@ -1,66 +1,194 @@
-# Installers and in-app updates
+# Signing keys and published releases
 
-Every craft app ships real installers from its `release.yml` (pushing to the `release` branch
-drafts a GitHub Release; publishing the draft makes it the version apps update to):
+You make the signing key once as the publisher. It proves that an update came from you. One
+key can sign releases for all four apps and any number of users or computers; people installing
+your apps never need the private key or their own key.
 
-- **Windows:** a per-machine `.msi` (x64, x86, arm64; Start menu entry, file associations,
-  upgrades in place) and a portable `.zip`.
-- **Linux:** an AppImage (with zsync delta-update information), `.deb`, `.rpm`, a Flatpak bundle and
-  a tarball, for x86_64 and aarch64.
-- **macOS:** a universal `.dmg`.
+Craftworks installs PdfCraft, VectorCraft and PhotoCraft from their **published stable GitHub
+Releases**. The release must include a Windows portable zip or Linux AppImage, `SHA256SUMS.txt`
+and its Ed25519 signature, `SHA256SUMS.txt.sig`. A draft release or an Actions artifact is not
+visible to the launcher.
 
-Apps update themselves with [`craft-update`](../crates/craft-update). This page is what the
-maintainer sets up once.
+You can use one free Ed25519 key pair for all four repositories. This is sufficient for
+Craftworks download verification on Windows and Linux. A Windows code-signing certificate is
+separate and optional; it does not replace the update key.
 
-## 1. The update signing key (needed for in-app installs)
+To try the apps before setting up publishing, you can still run an unpacked Windows portable
+zip, or a Linux AppImage/tarball, directly. The signing setup is needed for Craftworks to install
+and update those apps automatically. Existing old zip/folder copies do not need keys to launch.
 
-The app only installs what is signed with this key. Make it once, on your own machine, and keep
-the private half secret:
+## 1. Make the update key on your own computer
 
-```sh
-openssl genpkey -algorithm ed25519 -out craft-update-key.pem
-openssl pkey -in craft-update-key.pem -pubout -outform DER | base64 -w0   # the public key
-```
+If you already generated a key, reuse it. The helpers below are for creating your first key;
+do not create another key for another user, computer or release.
 
-One key can serve every craft app, or make one per app.
+Run **one** of the following from a Craftworks checkout containing the launcher changes in
+[PR #8](https://github.com/treeforjs/craftworks/pull/8). The helper requires a new output folder
+outside the repository, refuses to overwrite an existing folder and prints only the public key.
+It makes no GitHub changes.
 
-- **Private key:** in each app repository, *Settings ▸ Environments ▸ release ▸ Environment
-  secrets*, add `UPDATE_SIGNING_KEY` with the whole contents of `craft-update-key.pem`. Store a
-  backup offline: if it is lost, already-installed copies can no longer update themselves (people
-  would have to download one new version by hand).
-- **Public key:** add it as a *repository* variable (not a secret, and not an environment
-  variable) `CRAFT_UPDATE_PUBLIC_KEY`, under *Settings ▸ Secrets and variables ▸ Actions ▸
-  Variables*. The release workflow passes it to every desktop build, which embeds it. The Linux
-  jobs run without the `release` environment, so an environment variable would leave their
-  packages without the key.
-
-Until both exist, release builds still check for updates and offer the download page, and the
-release still builds unsigned.
-
-## 2. What the release workflow does
-
-After `SHA256SUMS.txt` is written, the draft-release job signs it:
+**Linux / Bash** (OpenSSL installed):
 
 ```sh
-printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
-openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in SHA256SUMS.txt | base64 -w0 > SHA256SUMS.txt.sig
-rm -f "$RUNNER_TEMP/key.pem"
+bash packaging/signing/new-key.sh "$HOME/.craft-signing-keys"
 ```
 
-and uploads `SHA256SUMS.txt.sig` with the other files. `craft-update`'s tests verify a
-signature made exactly this way.
+The Linux helper uses folder mode `700`, private-key mode `600` and `umask 077`.
 
-## 3. Code-signing certificates (separate, recommended)
+**Windows / PowerShell** (OpenSSL on `PATH`, or the copy supplied with Git for Windows):
 
-The update signature protects the update path. Operating systems separately warn about
-unsigned installers; those certificates are optional and the workflows already use them when
-present (see each app's `docs/releasing.md`):
+```powershell
+./packaging/signing/new-key.ps1 -OutputDirectory (Join-Path $env:USERPROFILE 'Craft-signing-keys')
+# If OpenSSL cannot be found automatically:
+# ./packaging/signing/new-key.ps1 -OutputDirectory (Join-Path $env:USERPROFILE 'Craft-signing-keys') -OpenSsl 'C:/Program Files/Git/usr/bin/openssl.exe'
+```
 
-| Platform | What | Secrets |
+The Windows helper grants the current user and SYSTEM access to the new folder and its files.
+Use an ordinary local folder with no junctions or symbolic links in its parents.
+
+The output folder contains:
+
+| File | Use |
+| --- | --- |
+| `craft-update-key.pem` | Private key. Upload its whole PEM contents only to the GitHub secret below. |
+| `craft-update-public-key.txt` | Public key in base64 DER SubjectPublicKeyInfo format. Copy its single line into the GitHub variable below. |
+| `craft-update-public.der` | The same public key in binary DER format, useful for signature checks. |
+
+Keep an encrypted offline backup of the private key. Keep using the same key for later releases;
+changing it requires distributing a newly built launcher and apps that trust the new public key.
+Never commit the private key or paste it into an issue or chat.
+
+The helpers generate an Ed25519 private PEM and export its public key as base64 DER. See
+[OpenSSL key generation](https://docs.openssl.org/3.5/man1/openssl-genpkey/) and
+[public-key export](https://docs.openssl.org/3.5/man1/openssl-pkey/).
+
+## 2. Put the key in GitHub
+
+Repeat these settings in **all four** repositories: `treeforjs/pdfcraft`, `treeforjs/vectorcraft`,
+`treeforjs/photocraft` and `treeforjs/craftworks`.
+
+1. **Settings > Environments > New environment**: create `release` if it does not exist.
+   Under **Environment secrets**, add `UPDATE_SIGNING_KEY` with the complete contents of
+   `craft-update-key.pem`, including the `BEGIN PRIVATE KEY` and `END PRIVATE KEY` lines.
+2. **Settings > Secrets and variables > Actions > Variables > New repository variable**:
+   add `CRAFT_UPDATE_PUBLIC_KEY` with the single line from `craft-update-public-key.txt`.
+   Use a **repository variable**: Linux build jobs do not enter the `release` environment.
+3. If the environment limits deployment branches/tags, allow the `release` **branch** for each
+   app. In Craftworks, allow `craftworks-v*` **tags** for the final signing job. Approve any
+   configured environment-review gate when the release run reaches it.
+
+These are two different settings: the private PEM is an **environment secret** and the public
+base64 string is a **repository variable**. See
+[GitHub environment secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets#creating-secrets-for-an-environment)
+and [GitHub variables](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/store-information-in-variables).
+
+With one shared key, `CRAFT_UPDATE_PUBLIC_KEY` is all that Craftworks needs. If its repository
+already has `PDFCRAFT_UPDATE_PUBLIC_KEY`, `VECTORCRAFT_UPDATE_PUBLIC_KEY`,
+`PHOTOCRAFT_UPDATE_PUBLIC_KEY` or `CRAFTWORKS_UPDATE_PUBLIC_KEY`, set them to the same public key
+or remove them: these app-specific variables override the shared fallback. Separate app keys are
+also supported; put each corresponding public key in the matching Craftworks variable.
+
+For local Craftworks builds, set the same public variable before building; repository variables
+are passed automatically only in GitHub Actions:
+
+```powershell
+$env:CRAFT_UPDATE_PUBLIC_KEY = (Get-Content -Raw (Join-Path $env:USERPROFILE 'Craft-signing-keys/craft-update-public-key.txt')).Trim()
+```
+
+```sh
+export CRAFT_UPDATE_PUBLIC_KEY="$(cat "$HOME/.craft-signing-keys/craft-update-public-key.txt")"
+```
+
+A launcher built before this step must be rebuilt and reinstalled. Changing GitHub settings
+cannot add a key to an existing executable.
+
+## 3. Build and publish the three app releases
+
+The existing app workflows run on a push to their `release` branch. Their version comes from
+`[workspace.package] version` in the root `Cargo.toml`. Inspect it before releasing; for reference,
+`main` contained these versions on 20 October 2026:
+
+| Repository | Version | Release tag |
 | --- | --- | --- |
-| Windows | an Authenticode code-signing certificate, either a `.pfx` or Azure Trusted Signing | `WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD`, or `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` |
-| macOS | a Developer ID Application certificate and an app-specific password for notarization | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` |
-| Linux | none needed | |
+| `treeforjs/pdfcraft` | `0.5.0` | `v0.5.0` |
+| `treeforjs/vectorcraft` | `0.8.0` | `v0.8.0` |
+| `treeforjs/photocraft` | `0.6.0` | `v0.6.0` |
 
-Without the Windows certificate, SmartScreen shows "Windows protected your PC" on first install
-(More info ▸ Run anyway); in-app updates after that still work.
+For each app:
+
+1. Open **Actions** and enable workflows if GitHub prompts. On `main`, check the current
+   version with `cargo xtask version`. If that version is already
+   published, use `cargo xtask version set X.Y.Z` to choose a new one, then commit and review
+   the updated `Cargo.toml` and `Cargo.lock`. Choose a normal `X.Y.Z` for the stable channel;
+   the launcher does not offer `-rc` or other prereleases.
+2. Move the reviewed `main` commit to `release`. If the branch does not exist, create it from
+   `main`. In a clean, current clone on `main`, `git push origin main:release` creates it or
+   fast-forwards it; if Git rejects a divergent/protected branch, merge through the normal PR
+   process. Do not force-push. The push starts the **Release** workflow.
+3. If `release` already points at the intended commit, use **Actions > Release > Run workflow**,
+   select the **release** branch and leave the optional version override empty. Selecting `main`
+   runs a build check that does not create the draft.
+4. Wait for every required job to succeed. The workflow creates a **draft** named
+   `<App> vX.Y.Z`. Open **Releases**, edit that draft and check that it contains the matching
+   Windows `*-portable.zip`, Linux `*.AppImage`, `SHA256SUMS.txt` and `SHA256SUMS.txt.sig`.
+   A missing-key warning is not success for Craftworks: do not publish until the signature exists.
+5. Download and try the Windows/Linux packages, then choose **Publish release**. Keep it a
+   stable release. Repeat for all three apps. The workflow chooses the `vX.Y.Z` tag; pushing
+   an app version tag alone does not run these release workflows.
+
+The existing app workflows also build macOS, FreeBSD, Flatpak and web packages before drafting
+any release. Their macOS jobs currently request `macos-15-xlarge`, and desktop jobs check out
+`storytold/craft-fonts`. Make sure those runners and that dependency are available to the
+repositories. A queued or failed required job prevents the final draft; inspect the first run
+before assuming the signing key is the problem.
+
+Repository-specific packaging details:
+[PdfCraft](https://github.com/treeforjs/pdfcraft/blob/main/docs/releasing.md),
+[VectorCraft](https://github.com/treeforjs/vectorcraft/blob/main/docs/releasing.md),
+[PhotoCraft](https://github.com/treeforjs/photocraft/blob/main/docs/releasing.md).
+GitHub documents [publishing a draft release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
+
+## 4. Build and publish Craftworks
+
+1. Merge [PR #8](https://github.com/treeforjs/craftworks/pull/8) so the launcher and
+   `.github/workflows/launcher-release.yml` exist on the branch being released. Configure the
+   Craftworks keys as above.
+2. In **Actions > Craftworks release > Run workflow**, select the merged branch for a build
+   check. A manual run validates keys and uploads build artifacts; it does **not** create a
+   release or run the checksum-signing job.
+3. The launcher version lives in `apps/craftworks/Cargo.toml` (initially `0.1.0`). For a later
+   release, update it and `Cargo.lock`, commit and review the change. From the reviewed commit,
+   push the matching tag:
+
+   ```sh
+   git tag craftworks-v0.1.0
+   git push origin craftworks-v0.1.0
+   ```
+
+   Replace `0.1.0` with the actual launcher version. The workflow rejects a mismatching tag.
+4. Wait for **Craftworks release** to build Windows x64/ARM64 and Linux x86_64/aarch64,
+   sign its checksum list and create the draft. Download the draft's installer for each platform,
+   install it, and test an app install and launch using the newly published app releases.
+5. Publish the draft from **Releases**. Install this new, keyed build in place of the earlier
+   preview. For future releases, retain the signing key and increment the application version.
+
+Published release assets must not be replaced. Rebuild with a new version if anything needs
+changing. Craftworks updates its managed apps; the launcher itself is updated by downloading
+and running its next installer. See [launcher.md](launcher.md) for packaging and supported assets.
+
+## Optional operating-system code signing
+
+The Ed25519 key above authenticates downloads. Windows Authenticode separately establishes the
+publisher identity used by Windows. A certificate or signing service may reduce operating-system
+warnings, but a signature does not guarantee that SmartScreen will show none. The app workflows
+already support these optional secrets in their `release` environment:
+
+| Platform | Secrets |
+| --- | --- |
+| Windows | `WINDOWS_CERTIFICATE` (base64 PFX) + `WINDOWS_CERTIFICATE_PASSWORD`, or `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` |
+| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` |
+| Linux | No operating-system signing certificate needed by this workflow. |
+
+The initial Craftworks NSIS setup and executable do not yet have an Authenticode-signing step.
+Set up the free update key first; purchasing a certificate is not required to publish working
+Windows and Linux packages for Craftworks.

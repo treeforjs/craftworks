@@ -7,13 +7,13 @@ published stable GitHub Release in `treeforjs/pdfcraft`, `treeforjs/vectorcraft`
 
 ## Current availability
 
-As of 20 October 2026, none of the three app repositories has a published GitHub Release, and
-their public release workflows have no runs. Their repositories contain packaging and release
-workflows, but a source repository alone is not an installable release. Craftworks shows this
-state without inventing a download or installing an unsigned package.
+Craftworks needs a published, signed GitHub Release for each app it installs. A repository,
+an Actions artifact or a draft release alone is not an installable release. Existing unpacked
+copies can still be run directly while publishing is being set up. Craftworks shows missing
+release assets without inventing a download or installing an unsigned package.
 
 The new launcher can be built from source. To distribute an installer that installs the apps,
-maintainers must complete the signing and first-release steps below. Published release assets
+maintainers must complete the [step-by-step signing and publishing guide](updates.md). Release assets
 and repository secrets could not be tested from an unauthenticated checkout.
 
 ## Install and use
@@ -39,6 +39,31 @@ need a desktop with glibc 2.35 or newer and the usual X11 or Wayland/OpenGL libr
 Open Craftworks, check for releases, then choose Install, Update or Open for each app. App
 downloads are installed for the current user. Existing MSI, distribution-package, Flatpak or
 manually unpacked installations are separate from the copies managed by Craftworks.
+
+### Retire an old ZIP or app folder
+
+Under each app, choose **Locate old ZIP copy**, paste the absolute path to the old app folder
+or its executable, and review the detected location. You can also drop the folder into this
+dialog. The app must be inside a dedicated folder named for it, such as `PdfCraft` or
+`pdfcraft-0.5.0-linux-x86_64`; shared folders and source checkouts are refused.
+Earlier `DrawCraft` folders and executables are recognized as VectorCraft copies too.
+
+Choose **Archive old copy** to move that entire folder into a uniquely named folder under
+`.craftworks-backups` beside its original location. Nothing in the old folder is deleted:
+embedded portable settings, documents and resources all move with it. The launcher shows the
+backup path. Restore the old copy by moving its archived folder back to the original location.
+Settings in this backup are not automatically imported into a new managed installation, and
+old shortcuts may need updating or removing.
+
+Craftworks also looks for dedicated app folders directly inside Downloads, Desktop,
+Applications, Apps and `.local/opt`. Other locations can be supplied manually. On Windows it
+recognizes the apps' previous registered MSI packages and offers their official Windows
+Installer removal separately. That removal preserves normal user settings and documents.
+Linux distribution-package and Flatpak removal remain with their package managers.
+
+Retiring an old copy is optional and requires confirmation. It never runs automatically when
+Craftworks is installed. Install and test the replacement first when possible; if no verified
+replacement is available, the confirmation explains that the old location will stop working.
 
 Managed app files live under `%LOCALAPPDATA%\Craftworks` on Windows or
 `$XDG_DATA_HOME/craftworks` on Linux. Each successful update activates a new version directory
@@ -109,6 +134,10 @@ Craftworks reuses `craft-update` verification. It first verifies the Ed25519 sig
 metadata alone does not authorize an install. Missing keys, missing signatures and mismatching
 hashes stop installation.
 
+The signing key belongs to the publisher. Make it once; any number of users and computers can
+install the signed releases, and users never need the private key. The key authenticates
+updates on both Windows and Linux; a Windows signing certificate is separate and optional.
+
 Use the existing app release workflows and the key setup in [`updates.md`](updates.md). For
 each app, its `release` environment needs an `UPDATE_SIGNING_KEY` secret, and its repository
 needs the corresponding `CRAFT_UPDATE_PUBLIC_KEY` variable. These are not Windows code-signing
@@ -138,6 +167,11 @@ If the `release` environment restricts allowed branches or tags, allow the `craf
 release tags as well.
 
 ## First release checklist
+
+See [`updates.md`](updates.md) for Linux and Windows key-generation helpers, exact GitHub
+settings and branch/publishing steps. The helpers keep private keys outside the checkout and
+make no GitHub changes. Merge [PR #8](https://github.com/treeforjs/craftworks/pull/8) before
+tagging a release from the default branch so the launcher release workflow is available.
 
 1. Configure the app signing keys, then run each app's existing release workflow on its
    `release` branch. Those workflows create **draft** releases; a draft is not visible to

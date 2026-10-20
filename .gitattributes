@@ -3,3 +3,4 @@ crates/craft-update/tests/data/** -text
 
 # Linux release scripts must remain executable by bash after a Windows checkout.
 packaging/linux/*.sh text eol=lf
+packaging/signing/*.sh text eol=lf

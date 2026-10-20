@@ -20,6 +20,9 @@ serde_json = "1"
 tempfile = "3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 base64 = "0.22"
 ed25519-dalek = "3"

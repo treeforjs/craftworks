@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
+use craft_manager::legacy::{self, LegacyInstall, LegacyMethod, Removal};
 use craft_manager::{APPS, App, Availability, Installed, Manager};
 use craft_ui::{Appearance, Palette, PaletteItem, Theme, Variant};
 use craft_update::{AppInfo, Error, GitHub, Release, Source, State, Updater, Version};
@@ -22,11 +24,63 @@ struct AppView {
     action_error: Option<String>,
     child: Option<Child>,
     launching: bool,
+    previous: Vec<PreviousCopy>,
+    previous_scanning: bool,
+    previous_generation: u64,
+    previous_error: Option<String>,
+    previous_action_error: Option<String>,
+    previous_notice: Option<String>,
+    previous_backup: Option<PathBuf>,
+}
+
+/// Preview rows never carry a validated installation, so screenshot fixtures cannot remove files.
+struct PreviousCopy {
+    install: Option<LegacyInstall>,
+    version: Option<String>,
+    description: String,
+    location: Option<PathBuf>,
+    method: LegacyMethod,
+}
+
+impl PreviousCopy {
+    fn validated(install: LegacyInstall) -> Self {
+        Self {
+            version: install.version.clone(),
+            description: install.description.clone(),
+            location: install.location.clone(),
+            method: install.method,
+            install: Some(install),
+        }
+    }
+}
+
+struct LocateCopy {
+    app: App,
+    generation: u64,
+    path: String,
+    error: Option<String>,
+    inspecting: bool,
 }
 
 impl AppView {
     fn new(app: App) -> Self {
-        Self { app, installed: None, installed_error: None, available: None, check_error: None, action_error: None, child: None, launching: false }
+        Self {
+            app,
+            installed: None,
+            installed_error: None,
+            available: None,
+            check_error: None,
+            action_error: None,
+            child: None,
+            launching: false,
+            previous: Vec::new(),
+            previous_scanning: false,
+            previous_generation: 0,
+            previous_error: None,
+            previous_action_error: None,
+            previous_notice: None,
+            previous_backup: None,
+        }
     }
 
     fn running(&self) -> bool {
@@ -69,6 +123,9 @@ enum Message {
     Installed(App, Result<Installed, Error>),
     Removed(App, Result<(), Error>),
     Launched(App, Result<Child, Error>),
+    PreviousScanned(App, u64, Result<Vec<LegacyInstall>, Error>),
+    PreviousInspected(App, u64, Result<LegacyInstall, Error>),
+    PreviousRemoved(LegacyInstall, Result<Removal, Error>),
     Failed(Job, String),
 }
 
@@ -78,6 +135,9 @@ enum Job {
     Check,
     Mutation(App),
     Launch(App),
+    PreviousScan(App, u64),
+    PreviousInspect(App, u64),
+    PreviousMutation(App),
 }
 
 enum Action {
@@ -87,6 +147,8 @@ enum Action {
     UpdateAll,
     Open(App),
     Remove(App),
+    LocatePrevious(App),
+    RemovePrevious(Box<LegacyInstall>),
     Cancel,
 }
 
@@ -105,6 +167,9 @@ pub struct Launcher {
     active: Option<Active>,
     queue: VecDeque<(App, Release)>,
     confirm_remove: Option<App>,
+    confirm_previous: Option<LegacyInstall>,
+    locate_previous: Option<LocateCopy>,
+    locate_generation: u64,
     tx: Sender<Message>,
     rx: Receiver<Message>,
     updater: Option<Updater>,
@@ -140,6 +205,9 @@ impl Launcher {
             active: None,
             queue: VecDeque::new(),
             confirm_remove: None,
+            confirm_previous: None,
+            locate_previous: None,
+            locate_generation: 0,
             tx,
             rx,
             updater: None,
@@ -151,6 +219,7 @@ impl Launcher {
     fn initialize(&mut self, ctx: &egui::Context) {
         self.initializing = true;
         self.fatal_error = None;
+        self.scan_previous(ctx);
         let source: Arc<dyn Source> = Arc::new(GitHub::new(format!("Craftworks/{}", env!("CARGO_PKG_VERSION"))));
         let mut updater = Updater::new(
             AppInfo {
@@ -205,10 +274,50 @@ impl Launcher {
         self.apps.iter_mut().find(|view| view.app.id == app.id)
     }
 
+    fn scan_previous(&mut self, ctx: &egui::Context) {
+        for app in APPS {
+            self.scan_previous_app(ctx, app);
+        }
+    }
+
+    fn scan_previous_app(&mut self, ctx: &egui::Context, app: App) {
+        if self.active.as_ref().is_some_and(|active| active.app.id == app.id) {
+            return;
+        }
+        let Some(view) = self.view_mut(app) else { return };
+        if view.previous_scanning {
+            return;
+        }
+        view.previous_scanning = true;
+        view.previous_generation = view.previous_generation.wrapping_add(1);
+        let generation = view.previous_generation;
+        let known_paths: Vec<PathBuf> = view
+            .previous
+            .iter()
+            .filter(|copy| matches!(copy.method, LegacyMethod::PortableFolder))
+            .filter_map(|copy| copy.location.clone())
+            .collect();
+        self.spawn(ctx, Job::PreviousScan(app, generation), move |tx| {
+            let result = legacy::scan(app).map(|mut found| {
+                // Revisit explicitly located folders too, including locations outside the bounded scan.
+                for path in known_paths {
+                    if let Ok(install) = legacy::inspect_portable(app, &path)
+                        && !found.contains(&install)
+                    {
+                        found.push(install);
+                    }
+                }
+                found
+            });
+            let _ = tx.send(Message::PreviousScanned(app, generation, result));
+        });
+    }
+
     fn check(&mut self, ctx: &egui::Context) {
         if self.checking || self.initializing {
             return;
         }
+        self.scan_previous(ctx);
         let Some(manager) = self.manager.clone() else {
             self.initialize(ctx);
             return;
@@ -317,6 +426,75 @@ impl Launcher {
                         }
                     }
                 }
+                Message::PreviousScanned(app, generation, result) => {
+                    if let Some(view) = self.view_mut(app)
+                        && view.previous_generation == generation
+                    {
+                        view.previous_scanning = false;
+                        match result {
+                            Ok(found) => {
+                                view.previous = found.into_iter().map(PreviousCopy::validated).collect();
+                                view.previous_error = None;
+                            }
+                            Err(error) => {
+                                view.previous_error =
+                                    Some(format!("Couldn't look for previous copies: {error}. You can locate an old ZIP copy below."))
+                            }
+                        }
+                    }
+                }
+                Message::PreviousInspected(app, generation, result) => {
+                    let locating = self.locate_previous.as_ref().is_some_and(|locate| locate.app.id == app.id && locate.generation == generation);
+                    if !locating {
+                        continue;
+                    }
+                    match result {
+                        Ok(install) => {
+                            if let Some(view) = self.view_mut(app) {
+                                // Invalidate any earlier scan so it cannot overwrite the newly located copy.
+                                view.previous_generation = view.previous_generation.wrapping_add(1);
+                                view.previous_scanning = false;
+                                if !view.previous.iter().any(|copy| copy.install.as_ref() == Some(&install)) {
+                                    view.previous.push(PreviousCopy::validated(install.clone()));
+                                }
+                            }
+                            if locating {
+                                self.locate_previous = None;
+                                self.confirm_previous = Some(install);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(locate) = &mut self.locate_previous
+                                && locating
+                            {
+                                locate.inspecting = false;
+                                locate.error = Some(error.to_string());
+                            }
+                        }
+                    }
+                }
+                Message::PreviousRemoved(install, result) => {
+                    self.active = None;
+                    let app = install.app;
+                    if let Some(view) = self.view_mut(app) {
+                        match result {
+                            Ok(removal) => {
+                                view.previous.retain(|copy| copy.install.as_ref() != Some(&install));
+                                view.previous_action_error = None;
+                                view.previous_notice = Some(if removal.backup.is_some() {
+                                    "Old copy archived. All files from its folder, including local settings and documents, are preserved in the backup.".into()
+                                } else if removal.restart_required {
+                                    "Old copy uninstalled. Restart Windows to finish removal. App settings and documents stay in place.".into()
+                                } else {
+                                    "Old copy uninstalled. App settings and documents stay in place.".into()
+                                });
+                                view.previous_backup = removal.backup;
+                            }
+                            Err(error) => view.previous_action_error = Some(format!("Couldn't remove the old copy: {error}")),
+                        }
+                    }
+                    self.scan_previous_app(ctx, app);
+                }
                 Message::Failed(job, message) => match job {
                     Job::Initialize => {
                         self.initializing = false;
@@ -337,6 +515,29 @@ impl Launcher {
                         if let Some(view) = self.view_mut(app) {
                             view.launching = false;
                             view.action_error = Some(message);
+                        }
+                    }
+                    Job::PreviousScan(app, generation) => {
+                        if let Some(view) = self.view_mut(app)
+                            && view.previous_generation == generation
+                        {
+                            view.previous_scanning = false;
+                            view.previous_error = Some(message);
+                        }
+                    }
+                    Job::PreviousInspect(app, generation) => {
+                        if let Some(locate) = &mut self.locate_previous
+                            && locate.app.id == app.id
+                            && locate.generation == generation
+                        {
+                            locate.inspecting = false;
+                            locate.error = Some(message);
+                        }
+                    }
+                    Job::PreviousMutation(app) => {
+                        self.active = None;
+                        if let Some(view) = self.view_mut(app) {
+                            view.previous_action_error = Some(message);
                         }
                     }
                 },
@@ -375,7 +576,12 @@ impl Launcher {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        if self.initializing || self.checking || self.active.is_some() || self.apps.iter().any(AppView::running) {
+        if self.initializing
+            || self.checking
+            || self.active.is_some()
+            || self.apps.iter().any(|view| view.running() || view.previous_scanning)
+            || self.locate_previous.as_ref().is_some_and(|locate| locate.inspecting)
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -452,6 +658,28 @@ impl Launcher {
             Action::Remove(app) => {
                 if self.active.is_none() && self.queue.is_empty() && self.apps.iter().any(|view| view.app.id == app.id && !view.running()) {
                     self.confirm_remove = Some(app);
+                    self.confirm_previous = None;
+                    self.locate_previous = None;
+                    self.settings_open = false;
+                    self.palette.open = false;
+                }
+            }
+            Action::LocatePrevious(app) => {
+                if self.active.is_none() && self.queue.is_empty() {
+                    self.locate_generation = self.locate_generation.wrapping_add(1);
+                    self.locate_previous =
+                        Some(LocateCopy { app, generation: self.locate_generation, path: String::new(), error: None, inspecting: false });
+                    self.confirm_remove = None;
+                    self.confirm_previous = None;
+                    self.settings_open = false;
+                    self.palette.open = false;
+                }
+            }
+            Action::RemovePrevious(install) => {
+                if self.can_remove_previous(install.app) {
+                    self.confirm_previous = Some(*install);
+                    self.confirm_remove = None;
+                    self.locate_previous = None;
                     self.settings_open = false;
                     self.palette.open = false;
                 }
@@ -477,6 +705,44 @@ impl Launcher {
             Some(Active { app, label: format!("Removing {}", app.name), received: 0, total: 0, cancel: Arc::default(), cancellable: false });
         self.spawn(ctx, Job::Mutation(app), move |tx| {
             let _ = tx.send(Message::Removed(app, manager.uninstall(app)));
+        });
+    }
+
+    fn can_remove_previous(&self, app: App) -> bool {
+        self.active.is_none()
+            && self.queue.is_empty()
+            && self.apps.iter().any(|view| view.app.id == app.id && !view.running() && !view.previous_scanning)
+    }
+
+    fn remove_previous(&mut self, ctx: &egui::Context, install: LegacyInstall) {
+        if !self.can_remove_previous(install.app) {
+            return;
+        }
+        let app = install.app;
+        let label = if matches!(install.method, LegacyMethod::PortableFolder) {
+            format!("Archiving old {} copy", app.name)
+        } else {
+            format!("Uninstalling old {} copy", app.name)
+        };
+        self.active = Some(Active { app, label, received: 0, total: 0, cancel: Arc::default(), cancellable: false });
+        self.spawn(ctx, Job::PreviousMutation(app), move |tx| {
+            let result = legacy::uninstall(&install);
+            let _ = tx.send(Message::PreviousRemoved(install, result));
+        });
+    }
+
+    fn inspect_previous(&mut self, ctx: &egui::Context) {
+        let Some(locate) = &mut self.locate_previous else { return };
+        if locate.inspecting || locate.path.trim().is_empty() {
+            return;
+        }
+        locate.inspecting = true;
+        locate.error = None;
+        let app = locate.app;
+        let generation = locate.generation;
+        let path = PathBuf::from(locate.path.trim().trim_matches('"'));
+        self.spawn(ctx, Job::PreviousInspect(app, generation), move |tx| {
+            let _ = tx.send(Message::PreviousInspected(app, generation, legacy::inspect_portable(app, &path)));
         });
     }
 
@@ -525,6 +791,27 @@ impl Launcher {
             }
         }
         app.checked_at = Some(Instant::now());
+        app
+    }
+
+    /// A network-free fixture for portable migration; synthetic rows cannot mutate the filesystem.
+    pub fn preview_previous(appearance: Appearance) -> Self {
+        let mut app = Self::preview(appearance);
+        app.notices.push("Preview fixture · Previous copies from unpacked ZIP downloads.".into());
+        for view in &mut app.apps {
+            let location = if cfg!(windows) {
+                PathBuf::from(format!("C:\\Users\\Creator\\Apps\\{}-old", view.app.id))
+            } else {
+                PathBuf::from(format!("/home/creator/Apps/{}-old", view.app.id))
+            };
+            view.previous.push(PreviousCopy {
+                install: None,
+                version: None,
+                description: format!("{} · Preview fixture", view.app.name),
+                location: Some(location),
+                method: LegacyMethod::PortableFolder,
+            });
+        }
         app
     }
 
@@ -614,8 +901,10 @@ impl Launcher {
                         if active.total > 0 {
                             let fraction = (active.received as f64 / active.total as f64).clamp(0.0, 1.0) as f32;
                             ui.add(egui::ProgressBar::new(fraction).text(format!("{} / {}", bytes(active.received), bytes(active.total))));
-                        } else {
+                        } else if active.cancellable {
                             ui.label(RichText::new("Downloading, verifying, and installing…").small().color(t.text_muted));
+                        } else {
+                            ui.label(RichText::new("Waiting for the file operation to finish…").small().color(t.text_muted));
                         }
                         if !self.queue.is_empty() {
                             ui.label(RichText::new(format!("{} more app(s) queued", self.queue.len())).small().color(t.text_muted));
@@ -667,8 +956,12 @@ impl Launcher {
         if let Some(action) = action {
             self.dispatch(&ctx, action);
         }
-        self.settings(&ctx);
+        if self.confirm_remove.is_none() && self.confirm_previous.is_none() && self.locate_previous.is_none() {
+            self.settings(&ctx);
+        }
         self.removal_dialog(&ctx);
+        self.previous_removal_dialog(&ctx);
+        self.locate_previous_dialog(&ctx);
         self.command_palette(&ctx, busy);
     }
 
@@ -731,8 +1024,114 @@ impl Launcher {
         }
     }
 
+    fn previous_removal_dialog(&mut self, ctx: &egui::Context) {
+        let Some(install) = &self.confirm_previous else { return };
+        let portable = matches!(install.method, LegacyMethod::PortableFolder);
+        let app = install.app;
+        let can_remove = self.can_remove_previous(app);
+        let replacement_unavailable =
+            self.apps.iter().find(|view| view.app.id == app.id).is_some_and(|view| view.installed.is_none() && view.newer_release().is_none());
+        let mut remove = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("remove-previous-copy")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(format!("{} old {} copy?", if portable { "Archive" } else { "Uninstall" }, app.name));
+            ui.label(&install.description);
+            ui.label(install.method.label());
+            if let Some(version) = &install.version {
+                ui.label(format!("Version {version}"));
+            }
+            if let Some(location) = &install.location {
+                ui.label(if portable { "Folder to move" } else { "Installed location" });
+                path_label(ui, location);
+            }
+            ui.add_space(8.0);
+            ui.label(if portable {
+                "Close the old app first. Craftworks moves this entire app folder into .craftworks-backups next to it. All files in the folder, including local settings and documents, stay in the backup. To restore it, move the backup folder back to this location."
+            } else {
+                "Windows will run this copy's registered uninstaller. Your documents and app settings stay in place."
+            });
+            if replacement_unavailable {
+                ui.add_space(8.0);
+                ui.label(if portable {
+                    "Craftworks cannot install a replacement right now. This old copy will no longer be at its current location. Keep it for now if it is your only working copy."
+                } else {
+                    "Craftworks cannot install a replacement right now. Keep this old copy for now if it is your only working copy."
+                });
+            }
+            if !can_remove {
+                ui.label("Wait for the current operation to finish and close the app before continuing.");
+            }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(can_remove, |ui| {
+                    remove = craft_ui::button(ui, if portable { "Archive old copy" } else { "Uninstall old copy" }, Variant::Danger).clicked();
+                });
+                cancel = craft_ui::button(ui, "Keep old copy", Variant::Secondary).clicked();
+            });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+        if remove {
+            if let Some(install) = self.confirm_previous.take() {
+                self.remove_previous(ctx, install);
+            }
+        } else if cancel {
+            self.confirm_previous = None;
+        }
+    }
+
+    fn locate_previous_dialog(&mut self, ctx: &egui::Context) {
+        let Some(locate) = &mut self.locate_previous else { return };
+        let mut inspect = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("locate-previous-copy")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(format!("Locate old {} ZIP copy", locate.app.name));
+            ui.label("Paste the path to its unpacked app folder or app executable. You can also drop the folder or file here.");
+            ui.label("Choose a dedicated app folder. A shared folder such as Documents or Downloads cannot be archived as an app.");
+            ui.add_enabled_ui(!locate.inspecting, |ui| {
+                let field = ui
+                    .add(egui::TextEdit::singleline(&mut locate.path).desired_width(ui.available_width()).hint_text("App folder or executable path"));
+                if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    inspect = true;
+                }
+                if !locate.inspecting
+                    && let Some(path) = ui.ctx().input(|input| input.raw.dropped_files.first().map(|file| file.path().to_path_buf()))
+                {
+                    locate.path = path.display().to_string();
+                }
+            });
+            if let Some(error) = &locate.error {
+                ui.add(egui::Label::new(error).wrap());
+            }
+            if locate.inspecting {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Checking the app folder…");
+                });
+            }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(!locate.inspecting && !locate.path.trim().is_empty(), |ui| {
+                    inspect |= craft_ui::button(ui, "Review old copy", Variant::Primary).clicked();
+                });
+                cancel = craft_ui::button(ui, "Cancel", Variant::Secondary).clicked();
+            });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+        if cancel {
+            self.locate_previous = None;
+        } else if inspect {
+            self.inspect_previous(ctx);
+        }
+    }
+
     fn command_palette(&mut self, ctx: &egui::Context, busy: bool) {
-        if self.confirm_remove.is_some() {
+        if self.confirm_remove.is_some() || self.confirm_previous.is_some() || self.locate_previous.is_some() {
             return;
         }
         let mut items = vec![
@@ -812,6 +1211,64 @@ fn appearance(ui: &mut egui::Ui, theme: &mut Theme) {
             ui.selectable_value(&mut theme.appearance, appearance, appearance.label());
         }
     });
+}
+
+fn path_label(ui: &mut egui::Ui, path: &std::path::Path) {
+    ui.add(egui::Label::new(RichText::new(path.display().to_string()).monospace()).selectable(true).wrap());
+}
+
+fn previous_copies(ui: &mut egui::Ui, view: &AppView, t: &craft_ui::Tokens, busy: bool, action: &mut Option<Action>) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Previous copies").strong());
+        ui.add_enabled_ui(!busy, |ui| {
+            if craft_ui::button(ui, "Locate old ZIP copy", Variant::Ghost).clicked() {
+                *action = Some(Action::LocatePrevious(view.app));
+            }
+        });
+    });
+    if view.previous_scanning {
+        ui.horizontal_wrapped(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Looking in common app folders…").small().color(t.text_muted));
+        });
+    } else if view.previous.is_empty() {
+        ui.add(egui::Label::new(RichText::new("No previous copies found in common app folders.").small().color(t.text_muted)).wrap());
+    }
+    for copy in &view.previous {
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(&copy.description).wrap());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(copy.method.label()).small().color(t.text_muted));
+            let version = copy.version.as_ref().map_or_else(|| "Version not recorded".into(), |version| format!("Version {version}"));
+            ui.label(RichText::new(version).small().color(t.text_muted));
+        });
+        if let Some(location) = &copy.location {
+            path_label(ui, location);
+        }
+        ui.add_enabled_ui(!busy && !view.running() && !view.previous_scanning && copy.install.is_some(), |ui| {
+            let label = if matches!(copy.method, LegacyMethod::PortableFolder) { "Archive old copy" } else { "Uninstall old copy" };
+            if craft_ui::button(ui, label, Variant::Secondary).clicked()
+                && let Some(install) = &copy.install
+            {
+                *action = Some(Action::RemovePrevious(Box::new(install.clone())));
+            }
+        });
+    }
+    for error in [&view.previous_error, &view.previous_action_error].into_iter().flatten() {
+        ui.add(egui::Label::new(RichText::new(error).small().color(t.danger)).wrap());
+    }
+    if let Some(notice) = &view.previous_notice {
+        ui.add(egui::Label::new(RichText::new(notice).small().color(t.success)).wrap());
+    }
+    if let Some(backup) = &view.previous_backup {
+        ui.label(RichText::new("Backup folder").small().color(t.text_muted));
+        path_label(ui, backup);
+        if craft_ui::button(ui, "Copy backup path", Variant::Ghost).clicked() {
+            ui.ctx().copy_text(backup.display().to_string());
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -929,6 +1386,7 @@ fn card(
                 ui.hyperlink_to("Read on GitHub", &release.page);
             });
         }
+        previous_copies(ui, view, t, busy, action);
     });
 }
 
@@ -995,6 +1453,69 @@ mod tests {
     }
 
     #[test]
+    fn previous_copy_scan_failure_keeps_the_managed_app_available() -> Result<(), Error> {
+        let ctx = egui::Context::default();
+        let mut app = Launcher::preview_offline(Appearance::Light);
+        let catalog_app = APPS.first().copied().ok_or_else(|| Error::Invalid("empty test catalog".into()))?;
+        let _ = app.tx.send(Message::PreviousScanned(catalog_app, 0, Err(Error::Invalid("folder unavailable".into()))));
+        app.poll(&ctx);
+        let view = app.apps.first().ok_or_else(|| Error::Invalid("empty test library".into()))?;
+        assert_eq!(view.installed.as_ref().map(|installed| installed.version.as_str()), Some("0.9.0"));
+        assert!(view.previous_error.is_some());
+        assert!(view.action_error.is_none());
+        assert!(app.fatal_error.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn stale_previous_scan_cannot_discard_a_newly_located_copy() -> Result<(), Error> {
+        let ctx = egui::Context::default();
+        let mut app = Launcher::preview_previous(Appearance::Dark);
+        let view = app.apps.first_mut().ok_or_else(|| Error::Invalid("empty test library".into()))?;
+        let catalog_app = view.app;
+        view.previous_generation = 2;
+        let _ = app.tx.send(Message::PreviousScanned(catalog_app, 1, Ok(Vec::new())));
+        app.poll(&ctx);
+        let view = app.apps.first().ok_or_else(|| Error::Invalid("empty test library".into()))?;
+        assert_eq!(view.previous.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn canceled_inspection_cannot_change_a_reopened_locator() -> Result<(), Error> {
+        let ctx = egui::Context::default();
+        let mut app = Launcher::preview(Appearance::Light);
+        let catalog_app = APPS.first().copied().ok_or_else(|| Error::Invalid("empty test catalog".into()))?;
+        app.locate_previous = Some(LocateCopy { app: catalog_app, generation: 2, path: "new-selection".into(), error: None, inspecting: true });
+        let _ = app.tx.send(Message::PreviousInspected(catalog_app, 1, Err(Error::Invalid("canceled selection".into()))));
+        app.poll(&ctx);
+        let locate = app.locate_previous.as_ref().ok_or_else(|| Error::Invalid("missing test locator".into()))?;
+        assert_eq!(locate.path, "new-selection");
+        assert!(locate.error.is_none());
+        assert!(locate.inspecting);
+        assert!(app.confirm_previous.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn previous_preview_rows_cannot_remove_files_and_running_apps_block_removal() -> Result<(), Error> {
+        let mut app = Launcher::preview_previous(Appearance::Light);
+        assert!(app.apps.iter().flat_map(|view| &view.previous).all(|copy| copy.install.is_none()));
+        let catalog_app = APPS.first().copied().ok_or_else(|| Error::Invalid("empty test catalog".into()))?;
+        assert!(app.can_remove_previous(catalog_app));
+        if let Some(view) = app.view_mut(catalog_app) {
+            view.launching = true;
+        }
+        assert!(!app.can_remove_previous(catalog_app));
+        if let Some(view) = app.view_mut(catalog_app) {
+            view.launching = false;
+            view.previous_scanning = true;
+        }
+        assert!(!app.can_remove_previous(catalog_app));
+        Ok(())
+    }
+
+    #[test]
     fn only_a_newer_installable_release_enables_update() -> Result<(), Error> {
         let mut app = Launcher::preview_without_key(Appearance::Light);
         let view = app.apps.first_mut().ok_or_else(|| Error::Invalid("empty test library".into()))?;
@@ -1040,11 +1561,32 @@ mod tests {
     }
 
     #[test]
+    fn locate_previous_copy_draws_at_small_sizes() {
+        for size in [vec2(360.0, 480.0), vec2(0.0, 0.0)] {
+            let ctx = egui::Context::default();
+            let mut app = Launcher::preview_previous(Appearance::Dark);
+            app.locate_previous = APPS.first().copied().map(|app| LocateCopy {
+                app,
+                generation: 0,
+                path: "old-app-folder".into(),
+                error: Some("Choose a dedicated app folder containing this app.".into()),
+                inspecting: false,
+            });
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.draw(ui));
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
     fn compact_library_fits_the_available_width() {
         for size in [vec2(360.0, 640.0), vec2(480.0, 640.0), vec2(920.0, 880.0)] {
-            for mut app in
-                [Launcher::preview(Appearance::Light), Launcher::preview_offline(Appearance::Dark), Launcher::preview_without_key(Appearance::Light)]
-            {
+            for mut app in [
+                Launcher::preview(Appearance::Light),
+                Launcher::preview_offline(Appearance::Dark),
+                Launcher::preview_without_key(Appearance::Light),
+                Launcher::preview_previous(Appearance::Dark),
+            ] {
                 let ctx = egui::Context::default();
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
                 let mut output = ctx.run_ui(input, |ui| {
