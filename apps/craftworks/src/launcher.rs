@@ -884,6 +884,8 @@ impl Launcher {
         }
         egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
             ui.set_width(ui.available_width().max(0.0));
+            // Reserve a gutter so the library scrollbar never covers cards or header controls.
+            ui.spacing_mut().scroll.floating = false;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
                 ui.set_width(viewport.width().max(0.0));
                 let narrow = ui.available_width() < 520.0;

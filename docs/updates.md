@@ -136,8 +136,8 @@ For each app:
    an app version tag alone does not run these release workflows.
 
 The release workflows build Windows and Linux packages. Their early signing checks reject a
-missing or mismatched key before packaging starts. Desktop jobs check out `storytold/craft-fonts`;
-that pinned dependency must be available. A queued or failed required job prevents the final
+missing or mismatched key before packaging starts. Desktop jobs check out the pinned font assets;
+that build input must be available. A queued or failed required job prevents the final
 draft; inspect the first run before assuming the signing key is the problem.
 
 Repository-specific packaging details:
