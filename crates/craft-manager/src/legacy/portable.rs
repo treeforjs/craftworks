@@ -105,11 +105,13 @@ pub(super) fn inspect(app: App, chosen: &Path) -> Result<LegacyInstall, Error> {
 }
 
 pub(super) fn archive(install: &LegacyInstall) -> Result<Removal, Error> {
+    #[cfg(windows)]
     let target = match &install.identity {
         Identity::Portable(target) => target,
-        #[cfg(windows)]
         _ => return Err(invalid("This is not a portable app folder.")),
     };
+    #[cfg(not(windows))]
+    let Identity::Portable(target) = &install.identity;
     let current = inspect(install.app, &target.directory)?;
     if current != *install {
         return Err(invalid("The old app folder changed after it was selected. Locate it again before archiving."));
