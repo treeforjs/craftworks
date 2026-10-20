@@ -123,7 +123,7 @@ jobs:
           export HOME="$RUNNER_TEMP/craftworks-user"
           export XDG_DATA_HOME="$HOME/.local/share"
           bash "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/install.sh"
-          desktop-file-validate "$XDG_DATA_HOME/applications/ai.storyteller.craftworks.desktop"
+          desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
           "$HOME/.local/bin/craftworks" --version
           bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
           test ! -e "$HOME/.local/bin/craftworks"

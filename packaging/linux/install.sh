@@ -23,7 +23,7 @@ install -m755 "$SOURCE/uninstall.sh" "$DEST/uninstall.sh"
 ln -sfn -- "$DEST/craftworks" "$BIN/craftworks"
 # A desktop Exec value is quoted and escaped independently from shell arguments.
 DESKTOP_EXE="$(printf '%s' "$DEST/craftworks" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g; s/%/%%/g')"
-cat >"$DATA/applications/ai.storyteller.craftworks.desktop" <<EOF
+cat >"$DATA/applications/io.github.treeforjs.craftworks.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Craftworks
