@@ -262,6 +262,39 @@ impl Manager {
         fs::remove_dir_all(&app_dir).map_err(|e| Error::Install(format!("Couldn't remove {}. Close the app and try again ({e}).", app.name)))
     }
 
+    pub(crate) fn preflight_uninstall(&self, app: App) -> Result<(), Error> {
+        validate_app(app)?;
+        self.validate_root()?;
+        let _lock = self.lock(true)?;
+        if let Some(path) = self.owned_app(app)? {
+            validate_owned_tree(&path)?;
+            #[cfg(target_os = "windows")]
+            preflight_removal(&path)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn owns_appimage(&self, app: App, path: &Path) -> Result<bool, Error> {
+        validate_app(app)?;
+        self.validate_root()?;
+        let Some(directory) = self.existing_app(app)? else { return Ok(false) };
+        let Ok(relative) = path.strip_prefix(directory.join("versions")) else { return Ok(false) };
+        let mut parts = relative.components();
+        let Some(Component::Normal(slot)) = parts.next() else { return Ok(false) };
+        let Some(Component::Normal(file)) = parts.next() else { return Ok(false) };
+        if parts.next().is_some() || file != format!("{}.AppImage", app.id).as_str() {
+            return Ok(false);
+        }
+        let Some(slot) = slot.to_str().and_then(|slot| parse_slot(slot).ok()) else { return Ok(false) };
+        let bytes = read_small(&directory.join("receipts").join(format!("{slot:020}.json")), 16 * 1024)?;
+        let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|_| Error::Install("An integration receipt is invalid.".into()))?;
+        if receipt.schema != 1 || receipt.app != app.id || receipt.slot != slot || Version::parse(&receipt.version).is_none() {
+            return Ok(false);
+        }
+        validate_regular_tree(&directory, path)?;
+        Ok(metadata(path)?.is_some_and(|meta| meta.is_file() && !is_link(&meta)))
+    }
+
     /// Launches the active owned executable directly, without a shell or administrator prompt.
     pub fn launch(&self, app: App) -> Result<Child, Error> {
         self.validate_root()?;

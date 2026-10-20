@@ -232,6 +232,28 @@ fn receipts_never_control_executable_paths() {
 }
 
 #[test]
+fn desktop_integration_requires_the_exact_owned_appimage_and_its_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = trusted(&dir.path().join("library"), Arc::new(Fake::default()));
+    let photo = APPS.iter().copied().find(|app| app.id == "photocraft").unwrap();
+    let app_dir = manager.prepare_app(photo).unwrap();
+    let version = app_dir.join("versions/00000000000000000001");
+    fs::create_dir(&version).unwrap();
+    let image = version.join("photocraft.AppImage");
+    fs::write(&image, b"fixture: never executed").unwrap();
+    let receipt = app_dir.join("receipts/00000000000000000001.json");
+    fs::write(&receipt, br#"{"schema":1,"app":"photocraft","version":"0.8.0","slot":1}"#).unwrap();
+    assert!(manager.owns_appimage(photo, &image).unwrap());
+    assert!(!manager.owns_appimage(photo, &dir.path().join("standalone.AppImage")).unwrap());
+    fs::write(version.join("renamed.AppImage"), b"unrelated").unwrap();
+    assert!(!manager.owns_appimage(photo, &version.join("renamed.AppImage")).unwrap());
+    fs::write(&receipt, br#"{"schema":1,"app":"photocraft","version":"0.8.0","slot":2}"#).unwrap();
+    assert!(!manager.owns_appimage(photo, &image).unwrap());
+    fs::write(&receipt, br#"{"schema":1,"app":"pdfcraft","version":"0.8.0","slot":1}"#).unwrap();
+    assert!(!manager.owns_appimage(photo, &image).unwrap());
+}
+
+#[test]
 fn incomplete_owned_structure_can_be_removed_or_repaired() {
     let dir = tempfile::tempdir().unwrap();
     let (fake, releases) = repository(&["1.0.0"]);

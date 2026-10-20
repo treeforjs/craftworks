@@ -21,6 +21,10 @@ mod package;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod legacy;
 
+/// Preview and remove an installed Craftworks launcher without touching source checkouts.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod self_removal;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use manager::Manager;
 

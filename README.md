@@ -7,9 +7,8 @@ Craftworks installs apps for your user account, without administrator access: ve
 portable packages and Linux AppImages. Updates are checked against a signed checksum list
 before any downloaded app is installed.
 
-**Release status:** none of these three app repositories has a published release yet. The
-launcher can be built and run now; app installation becomes available after maintainers publish
-their first signed releases and configure the launcher's trusted public keys. See
+The launcher lists published stable releases and verifies downloads using its configured
+trusted public keys. See
 [`docs/launcher.md`](docs/launcher.md) for setup, platform details and the release checklist.
 
 ```sh
@@ -19,7 +18,14 @@ cargo run -p craftworks
 Downloadable Craftworks builds are produced by
 [`launcher-release.yml`](.github/workflows/launcher-release.yml): a Windows installer and
 portable zip, and a bundled Linux setup script or tarball with a user installer. Update the launcher itself by running
-the newer installer; this first version centralizes updates for the three apps.
+the newer installer. Check for updates also checks Craftworks and links to its newer installer.
+
+To remove it, open **Settings → Uninstall Craftworks…**, review the exact locations, and confirm.
+Managed apps and their settings/data are separate, optional cleanup choices. Presets, installed
+fonts and recovery copies can contain work you want to keep; back them up before selecting
+data deletion. Documents elsewhere, custom profiles and old-copy backups remain untouched.
+Only installed launchers can remove themselves; development and unpacked portable copies stay
+in place. Details and manual removal instructions are in [`docs/launcher.md`](docs/launcher.md).
 
 The shared pieces:
 

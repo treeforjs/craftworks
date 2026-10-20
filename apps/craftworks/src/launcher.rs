@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use craft_manager::legacy::{self, LegacyInstall, LegacyMethod, Removal};
+use craft_manager::self_removal::{Options as UninstallOptions, Plan as UninstallPlan};
 use craft_manager::{APPS, App, Availability, Installed, Manager};
 use craft_ui::{Appearance, Palette, PaletteItem, Theme, Variant};
 use craft_update::{AppInfo, Error, GitHub, Release, Source, State, Updater, Version};
@@ -60,6 +61,17 @@ struct LocateCopy {
     path: String,
     error: Option<String>,
     inspecting: bool,
+}
+
+#[derive(Default)]
+struct UninstallLauncher {
+    plan: Option<UninstallPlan>,
+    // Display-only gallery rows never carry a validated plan or enable removal.
+    preview_paths: Vec<PathBuf>,
+    options: UninstallOptions,
+    confirmed: bool,
+    loading: bool,
+    error: Option<String>,
 }
 
 impl AppView {
@@ -126,6 +138,8 @@ enum Message {
     PreviousScanned(App, u64, Result<Vec<LegacyInstall>, Error>),
     PreviousInspected(App, u64, Result<LegacyInstall, Error>),
     PreviousRemoved(LegacyInstall, Result<Removal, Error>),
+    UninstallPreview(Result<UninstallPlan, Error>),
+    UninstallPrepared(Result<UninstallPlan, Error>),
     Failed(Job, String),
 }
 
@@ -138,6 +152,7 @@ enum Job {
     PreviousScan(App, u64),
     PreviousInspect(App, u64),
     PreviousMutation(App),
+    Uninstall,
 }
 
 enum Action {
@@ -158,6 +173,9 @@ pub struct Launcher {
     theme: Theme,
     palette: Palette,
     settings_open: bool,
+    uninstall_launcher: Option<UninstallLauncher>,
+    removing_launcher: bool,
+    uninstall_on_exit: Option<Sender<UninstallPlan>>,
     apps: Vec<AppView>,
     manager: Option<Manager>,
     initializing: bool,
@@ -191,12 +209,22 @@ impl Launcher {
         app
     }
 
+    /// Send a confirmed removal to the executable, which completes it after GUI storage exits.
+    pub fn new_with_uninstall(cc: &eframe::CreationContext<'_>, on_exit: Sender<UninstallPlan>) -> Self {
+        let mut app = Self::new(cc);
+        app.uninstall_on_exit = Some(on_exit);
+        app
+    }
+
     fn empty() -> Self {
         let (tx, rx) = channel();
         Self {
             theme: Theme::default(),
             palette: Palette::default(),
             settings_open: false,
+            uninstall_launcher: None,
+            removing_launcher: false,
+            uninstall_on_exit: None,
             apps: APPS.into_iter().map(AppView::new).collect(),
             manager: None,
             initializing: false,
@@ -521,6 +549,36 @@ impl Launcher {
                     }
                     self.scan_previous_app(ctx, app);
                 }
+                Message::UninstallPreview(result) => {
+                    if let Some(dialog) = &mut self.uninstall_launcher {
+                        dialog.loading = false;
+                        match result {
+                            Ok(plan) => dialog.plan = Some(plan),
+                            Err(error) => dialog.error = Some(error.to_string()),
+                        }
+                    }
+                }
+                Message::UninstallPrepared(result) => {
+                    self.removing_launcher = false;
+                    match result {
+                        Ok(plan) => {
+                            let sent = self.uninstall_on_exit.as_ref().is_some_and(|sender| sender.send(plan).is_ok());
+                            if sent {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            } else if let Some(dialog) = &mut self.uninstall_launcher {
+                                dialog.error = Some("The shutdown handler is unavailable. The launcher was kept; restart it and retry.".into());
+                            }
+                        }
+                        Err(error) => {
+                            self.close_after_cancel = false;
+                            if let Some(dialog) = &mut self.uninstall_launcher {
+                                dialog.error =
+                                    Some(format!("{error} Some selected cleanup may already have completed. The launcher is still available."));
+                                dialog.confirmed = false;
+                            }
+                        }
+                    }
+                }
                 Message::Failed(job, message) => match job {
                     Job::Initialize => {
                         self.initializing = false;
@@ -566,6 +624,14 @@ impl Launcher {
                             view.previous_action_error = Some(message);
                         }
                     }
+                    Job::Uninstall => {
+                        self.removing_launcher = false;
+                        self.close_after_cancel = false;
+                        if let Some(dialog) = &mut self.uninstall_launcher {
+                            dialog.loading = false;
+                            dialog.error = Some(message);
+                        }
+                    }
                 },
             }
         }
@@ -596,7 +662,7 @@ impl Launcher {
                 }
             }
         }
-        if self.active.is_none() {
+        if self.active.is_none() && !self.removing_launcher {
             self.start_next(ctx);
             if self.close_after_cancel && self.active.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -646,6 +712,9 @@ impl Launcher {
     }
 
     fn dispatch(&mut self, ctx: &egui::Context, action: Action) {
+        if self.removing_launcher {
+            return;
+        }
         match action {
             Action::Check => self.check(ctx),
             Action::CheckLauncher => self.check_launcher(ctx),
@@ -785,6 +854,33 @@ impl Launcher {
         app
     }
 
+    /// Network-free uninstall preview. Display-only paths cannot remove files.
+    pub fn preview_uninstall(appearance: Appearance) -> Self {
+        let mut app = Self::preview(appearance);
+        let paths = if cfg!(windows) {
+            vec![
+                PathBuf::from(r"C:\Users\You\AppData\Local\Programs\Craftworks\craftworks.exe"),
+                PathBuf::from(r"C:\Users\You\AppData\Roaming\Craftworks\data\app.ron"),
+                PathBuf::from(r"C:\Users\You\AppData\Local\Craftworks\pdfcraft"),
+                PathBuf::from(r"C:\Users\You\AppData\Local\Craftworks\vectorcraft"),
+                PathBuf::from(r"C:\Users\You\AppData\Local\Craftworks\photocraft"),
+                PathBuf::from(r"C:\Users\You\AppData\Roaming\Photocraft"),
+            ]
+        } else {
+            vec![
+                PathBuf::from("/home/you/.local/share/craftworks-launcher/craftworks"),
+                PathBuf::from("/home/you/.local/share/craftworks/app.ron"),
+                PathBuf::from("/home/you/.local/share/craftworks/pdfcraft"),
+                PathBuf::from("/home/you/.local/share/craftworks/vectorcraft"),
+                PathBuf::from("/home/you/.local/share/craftworks/photocraft"),
+                PathBuf::from("/home/you/.config/photocraft"),
+            ]
+        };
+        app.uninstall_launcher =
+            Some(UninstallLauncher { options: UninstallOptions { managed_apps: true, app_data: true }, preview_paths: paths, ..Default::default() });
+        app
+    }
+
     /// A network-free fixture showing an available Craftworks release.
     pub fn preview_launcher_update(appearance: Appearance) -> Self {
         let mut app = Self::preview(appearance);
@@ -875,7 +971,7 @@ impl Launcher {
         let ctx = ui.ctx().clone();
         let t = craft_ui::apply(&ctx, &self.theme);
         let mut action = None;
-        let busy = self.initializing || self.active.is_some() || !self.queue.is_empty();
+        let busy = self.initializing || self.active.is_some() || !self.queue.is_empty() || self.removing_launcher;
         if ctx.input_mut(|input| input.consume_shortcut(&craft_ui::shortcuts::PALETTE)) {
             self.palette.open();
         }
@@ -1000,13 +1096,16 @@ impl Launcher {
         if let Some(action) = action {
             self.dispatch(&ctx, action);
         }
-        if self.confirm_remove.is_none() && self.confirm_previous.is_none() && self.locate_previous.is_none() {
+        if self.confirm_remove.is_none() && self.confirm_previous.is_none() && self.locate_previous.is_none() && self.uninstall_launcher.is_none() {
             self.settings(&ctx);
         }
         self.removal_dialog(&ctx);
         self.previous_removal_dialog(&ctx);
         self.locate_previous_dialog(&ctx);
-        self.command_palette(&ctx, busy);
+        self.uninstall_launcher_dialog(&ctx);
+        if self.uninstall_launcher.is_none() {
+            self.command_palette(&ctx, busy);
+        }
     }
 
     fn launcher_update_status(&self, ui: &mut egui::Ui, t: &craft_ui::Tokens, action: &mut Option<Action>) {
@@ -1039,7 +1138,7 @@ impl Launcher {
     }
 
     fn header_actions(&mut self, ui: &mut egui::Ui) {
-        if craft_ui::button(ui, "Settings", Variant::Ghost).on_hover_text("Appearance and display scale · Ctrl+,").clicked() {
+        if craft_ui::button(ui, "Settings", Variant::Ghost).on_hover_text("Appearance, display scale and uninstall · Ctrl+,").clicked() {
             self.settings_open = true;
         }
         if craft_ui::button(ui, "Commands", Variant::Ghost).on_hover_text("Search commands · Ctrl+K").clicked() {
@@ -1049,6 +1148,7 @@ impl Launcher {
 
     fn settings(&mut self, ctx: &egui::Context) {
         let mut open = self.settings_open;
+        let mut uninstall = false;
         egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(true).default_width(640.0).vscroll(true).show(ctx, |ui| {
             if ui.available_width() >= 560.0 {
                 craft_ui::appearance_settings(ui, &mut self.theme);
@@ -1068,8 +1168,104 @@ impl Launcher {
             }
             ui.add_space(12.0);
             ui.label("Keyboard · Tab moves focus, Enter activates, Ctrl+K searches commands, Ctrl+, opens settings.");
+            ui.add_space(16.0);
+            ui.separator();
+            ui.label("Remove Craftworks from this computer");
+            let available = !self.initializing && self.active.is_none() && self.queue.is_empty();
+            ui.add_enabled_ui(available, |ui| {
+                uninstall = craft_ui::button(ui, "Uninstall Craftworks…", Variant::Danger).clicked();
+            });
+            ui.label("Review the exact locations and optional app-data cleanup before anything is removed.");
         });
         self.settings_open = open;
+        if uninstall {
+            self.settings_open = false;
+            self.uninstall_launcher = Some(UninstallLauncher { loading: true, ..Default::default() });
+            let manager = self.manager.clone();
+            self.spawn(ctx, Job::Uninstall, move |tx| {
+                let _ = tx.send(Message::UninstallPreview(UninstallPlan::detect(manager.as_ref())));
+            });
+        }
+    }
+
+    fn uninstall_launcher_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.uninstall_launcher else { return };
+        let mut cancel = false;
+        let mut uninstall = false;
+        egui::Modal::new(egui::Id::new("uninstall-craftworks")).show(ctx, |ui| {
+            ui.set_max_width((ctx.content_rect().width() - 48.0).clamp(200.0, 560.0));
+            ui.heading("Uninstall Craftworks");
+            egui::ScrollArea::vertical().id_salt("uninstall-details").max_height((ctx.content_rect().height() - 230.0).max(80.0)).show(ui, |ui| {
+            ui.label("Craftworks will close, then remove its installed launcher and own saved window state. Documents outside the listed locations, old-copy backups and unknown launcher files stay in place.");
+            ui.add_space(8.0);
+            ui.add_enabled_ui(!self.removing_launcher, |ui| {
+                if ui.checkbox(&mut dialog.options.managed_apps, "Also remove apps installed through Craftworks").changed() {
+                    dialog.confirmed = false;
+                }
+                if ui.checkbox(&mut dialog.options.app_data, "Also permanently delete the listed Craft app settings and data").changed() {
+                    dialog.confirmed = false;
+                }
+            });
+            if dialog.options.app_data {
+                ui.label("This includes presets, installed fonts and recovery copies of unsaved work. Back them up first. Custom profile locations and old-copy backups are kept.");
+            }
+            if dialog.loading || self.removing_launcher {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(if self.removing_launcher { "Checking and removing selected app data…" } else { "Checking the installed launcher…" });
+                });
+            }
+            let paths = dialog.plan.as_ref().map_or_else(|| dialog.preview_paths.clone(), |plan| plan.paths(dialog.options));
+            if !paths.is_empty() {
+                ui.label(RichText::new("Exact locations selected for removal").strong());
+                    for path in paths {
+                        path_label(ui, &path);
+                    }
+                    #[cfg(windows)]
+                    ui.label("Installer records: HKCU\\Software\\Craftworks and HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Craftworks");
+                ui.label("Missing files are skipped. Library ownership/lock files are removed only when the library is empty. Empty installation folders are removed; folders with unknown files remain. Windows finishes through its registered uninstaller. Operating-system logs and download copies elsewhere are not erased.");
+            }
+            if let Some(error) = &dialog.error {
+                ui.add(egui::Label::new(error).wrap());
+            }
+            });
+            ui.add_space(8.0);
+            ui.add_enabled_ui(!self.removing_launcher, |ui| {
+                ui.checkbox(&mut dialog.confirmed, "I have reviewed these locations and want to remove the selected files");
+            });
+            let can_remove = dialog.confirmed
+                && dialog.plan.is_some()
+                && !dialog.loading
+                && !self.removing_launcher
+                && self.uninstall_on_exit.is_some()
+                && !self.apps.iter().any(AppView::running);
+            if self.apps.iter().any(AppView::running) {
+                ui.label("Close apps opened through Craftworks before uninstalling.");
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(can_remove, |ui| {
+                    uninstall = craft_ui::button(ui, "Uninstall and close Craftworks", Variant::Danger).clicked();
+                });
+                ui.add_enabled_ui(!self.removing_launcher, |ui| {
+                    cancel = craft_ui::button(ui, "Keep Craftworks", Variant::Secondary).clicked();
+                });
+            });
+        });
+        if !self.removing_launcher && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+        let selected = if uninstall { dialog.plan.clone().map(|plan| (plan, dialog.options)) } else { None };
+        if cancel {
+            self.uninstall_launcher = None;
+        }
+        if let Some((plan, options)) = selected {
+            let manager = self.manager.clone();
+            self.removing_launcher = true;
+            self.spawn(ctx, Job::Uninstall, move |tx| {
+                let result = plan.prepare(manager.as_ref(), options).map(|()| plan);
+                let _ = tx.send(Message::UninstallPrepared(result));
+            });
+        }
     }
 
     fn removal_dialog(&mut self, ctx: &egui::Context) {
@@ -1209,7 +1405,7 @@ impl Launcher {
         }
         let mut items = vec![
             PaletteItem::command("check", "Check for updates").enabled(!self.checking_updates()),
-            PaletteItem::command("settings", "Appearance and display scale").shortcut("Ctrl+,"),
+            PaletteItem::command("settings", "Appearance, display scale and uninstall").shortcut("Ctrl+,"),
         ];
         for view in &self.apps {
             items.push(
@@ -1242,7 +1438,7 @@ impl Launcher {
 impl eframe::App for Launcher {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
-        if ctx.input(|input| input.viewport().close_requested()) && self.active.is_some() {
+        if ctx.input(|input| input.viewport().close_requested()) && (self.active.is_some() || self.removing_launcher) {
             // Downloads can cancel; removal needs to finish. Keep the window alive until
             // the worker has stopped so no partially written installation is left behind.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1738,6 +1934,46 @@ mod tests {
     }
 
     #[test]
+    fn failed_uninstall_preflight_keeps_the_window_open_with_an_actionable_error() -> Result<(), Error> {
+        let ctx = egui::Context::default();
+        let mut app = Launcher::preview_uninstall(Appearance::Light);
+        app.removing_launcher = true;
+        app.close_after_cancel = true;
+        let _ = app.tx.send(Message::UninstallPrepared(Err(Error::Install("Close PhotoCraft first".into()))));
+        app.poll(&ctx);
+        assert!(!app.removing_launcher);
+        assert!(!app.close_after_cancel);
+        let dialog = app.uninstall_launcher.as_ref().ok_or_else(|| Error::Invalid("missing uninstall dialog".into()))?;
+        assert!(dialog.error.as_ref().is_some_and(|error| error.contains("Close PhotoCraft first")));
+        assert!(!dialog.confirmed);
+        assert!(dialog.plan.is_none(), "gallery paths never enable filesystem removal");
+        Ok(())
+    }
+
+    #[test]
+    fn escape_leaves_uninstall_without_a_shutdown_request() {
+        let ctx = egui::Context::default();
+        let mut app = Launcher::preview_uninstall(Appearance::Dark);
+        let (tx, rx) = channel();
+        app.uninstall_on_exit = Some(tx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 480.0))),
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.draw(ui));
+        output.textures_delta.clear();
+        assert!(app.uninstall_launcher.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn settings_and_remove_confirmation_draw_at_small_sizes() {
         for size in [vec2(360.0, 480.0), vec2(0.0, 0.0)] {
             let ctx = egui::Context::default();
@@ -1781,6 +2017,7 @@ mod tests {
                 Launcher::preview_previous(Appearance::Dark),
                 Launcher::preview_launcher_update(Appearance::Light),
                 Launcher::preview_launcher_checking(Appearance::Dark),
+                Launcher::preview_uninstall(Appearance::Light),
             ] {
                 let ctx = egui::Context::default();
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };

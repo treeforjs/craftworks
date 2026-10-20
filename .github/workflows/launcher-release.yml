@@ -90,6 +90,12 @@ jobs:
       - name: Build the current-user installer and portable zip
         shell: pwsh
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
+      - name: Check installed Windows setup and removal
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./packaging/windows/test-install.ps1 -Arch ${{ matrix.arch }} -Version $env:VERSION
       - name: Fetch authenticated public release feeds
         env:
           GH_TOKEN: ${{ github.token }}

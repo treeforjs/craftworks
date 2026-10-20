@@ -185,6 +185,34 @@ packaging does not sign the executable or setup file with Authenticode.
 If the `release` environment restricts allowed branches or tags, allow the `release` branch
 and the `craftworks-v*` release tags.
 
+## Uninstalling
+
+Open **Settings → Uninstall Craftworks…** in the installed launcher. It shows exact file and
+folder paths before the final confirmation. Removing managed binaries and deleting app data
+are separate, unchecked choices. Data deletion includes the listed standard profiles, presets,
+fonts, caches and recovery copies of unsaved documents; back them up first. Close the Craft
+apps and any other Craftworks window before removal. Portable profile data inside a managed
+installation prevents binary removal unless app-data deletion is explicitly selected.
+
+The launcher completes its own cleanup after its GUI storage has finished saving. Windows
+then runs the exact registered per-user NSIS uninstaller after the process exits; it never
+executes a registry command string or requests administrator privileges. Linux removes only
+the known launcher files, its matching command link and desktop entry. Unknown launcher files,
+custom data locations, documents outside the selected profiles and old-copy backups are kept.
+Selecting managed-app removal also cleans older PhotoCraft AppImage menu entries and their
+known icon files only when the entry points to a receipt-owned managed version. Standalone,
+changed or linked entries/icons are kept. PhotoCraft's normal Wayland icon integration stays
+available when launching a managed app.
+Ownership/lock metadata is removed only from an otherwise empty, owned library. Operating-system
+logs and installer downloads elsewhere are not erased. If a filesystem operation fails, some
+selected cleanup may already have completed; remaining files are kept and an error is shown.
+
+For older installed versions without this button, use **Windows Settings → Apps → Craftworks →
+Uninstall**, or on Linux run `bash "${XDG_DATA_HOME:-$HOME/.local/share}/craftworks-launcher/uninstall.sh"`.
+Those older uninstallers keep managed apps and profiles. Source/build copies and unpacked
+portable launchers cannot uninstall themselves; remove their own extracted folder manually
+after closing them, keeping any documents or portable profile data you need.
+
 ## First release checklist
 
 See [`updates.md`](updates.md) for Linux and Windows key-generation helpers, exact GitHub
