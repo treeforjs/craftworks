@@ -3,7 +3,8 @@
 Craftworks is the single place to install, update and open PdfCraft, VectorCraft and PhotoCraft
 on Windows and Linux. Each app keeps its own release schedule; the launcher checks the latest
 published stable GitHub Release in `treeforjs/pdfcraft`, `treeforjs/vectorcraft` and
-`treeforjs/photocraft`.
+`treeforjs/photocraft`. The same check also looks for Craftworks updates in
+`treeforjs/craftworks`, including its `craftworks-v<version>` release tags.
 
 ## Current availability
 
@@ -12,9 +13,8 @@ an Actions artifact or a draft release alone is not an installable release. Exis
 copies can still be run directly while publishing is being set up. Craftworks shows missing
 release assets without inventing a download or installing an unsigned package.
 
-The new launcher can be built from source. To distribute an installer that installs the apps,
-maintainers must complete the [step-by-step signing and publishing guide](updates.md). Release assets
-and repository secrets could not be tested from an unauthenticated checkout.
+Download the launcher from [Craftworks releases](https://github.com/treeforjs/craftworks/releases).
+Maintainers can follow the [step-by-step signing and publishing guide](updates.md) for new releases.
 
 ## Install and use
 
@@ -27,8 +27,8 @@ On Linux, download `craftworks-<version>-linux-x86_64-setup.sh` (or `aarch64` on
 computer). From the download folder, run it as your normal user:
 
 ```sh
-bash craftworks-0.1.1-linux-x86_64-setup.sh --dry-run
-bash craftworks-0.1.1-linux-x86_64-setup.sh
+bash craftworks-0.1.2-linux-x86_64-setup.sh --dry-run
+bash craftworks-0.1.2-linux-x86_64-setup.sh
 ```
 
 Use the actual downloaded version and architecture in those commands. The setup file contains
@@ -53,6 +53,11 @@ Launch **Craftworks** from your application menu, or run `~/.local/bin/craftwork
 Open Craftworks, check for releases, then choose Install, Update or Open for each app. App
 downloads are installed for the current user. Existing MSI, distribution-package, Flatpak or
 manually unpacked installations are separate from the copies managed by Craftworks.
+
+Craftworks shows its own checking, up-to-date or update-available status beside the update
+controls. **Download Craftworks update** opens the newer release's download page. Close the
+launcher and run that version's setup as above, then reopen Craftworks. A failed launcher
+update check has its own retry action and leaves the app library available.
 
 ### Retire an old ZIP or app folder
 
@@ -194,7 +199,7 @@ make no GitHub changes. Release from the reviewed commit containing the current 
 3. Bump `apps/craftworks/Cargo.toml` and update `Cargo.lock`. Run the CI checks and test a real
    signed app install and update on both Windows and Linux.
 4. Push the reviewed commit to the `release` branch, or push a matching version tag such as
-   `craftworks-v0.1.1`.
+   `craftworks-v0.1.2`.
    `launcher-release.yml` builds Windows x64 and ARM64 and Linux x86_64 and aarch64, signs the
    checksum list, and creates a draft Craftworks release. A manual workflow dispatch on `release`
    also creates a draft; selecting `main` only builds and checks artifacts. Signing preflight

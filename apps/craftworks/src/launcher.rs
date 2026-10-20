@@ -142,6 +142,7 @@ enum Job {
 
 enum Action {
     Check,
+    CheckLauncher,
     Install(App),
     InstallAll,
     UpdateAll,
@@ -173,6 +174,7 @@ pub struct Launcher {
     tx: Sender<Message>,
     rx: Receiver<Message>,
     updater: Option<Updater>,
+    preview_update: Option<State>,
     last_child_poll: Instant,
     close_after_cancel: bool,
 }
@@ -211,6 +213,7 @@ impl Launcher {
             tx,
             rx,
             updater: None,
+            preview_update: None,
             last_child_poll: Instant::now(),
             close_after_cancel: false,
         }
@@ -221,20 +224,11 @@ impl Launcher {
         self.fatal_error = None;
         self.scan_previous(ctx);
         let source: Arc<dyn Source> = Arc::new(GitHub::new(format!("Craftworks/{}", env!("CARGO_PKG_VERSION"))));
-        let mut updater = Updater::new(
-            AppInfo {
-                id: "craftworks".into(),
-                display_name: "Craftworks".into(),
-                repo: "treeforjs/craftworks".into(),
-                current: env!("CARGO_PKG_VERSION").into(),
-                public_key: select_key(option_env!("CRAFTWORKS_UPDATE_PUBLIC_KEY"), option_env!("CRAFT_UPDATE_PUBLIC_KEY")).map(str::to_owned),
-                prereleases: false,
-            },
-            source.clone(),
-        );
-        let repaint = ctx.clone();
-        updater.on_change(move || repaint.request_repaint());
-        self.updater = Some(updater);
+        if self.updater.is_none() {
+            self.configure_updater(ctx, source.clone());
+        } else {
+            self.check_launcher(ctx);
+        }
         self.spawn(ctx, Job::Initialize, move |tx| {
             let result = (|| {
                 let mut manager = Manager::new(Manager::default_root()?, source)?;
@@ -252,6 +246,40 @@ impl Launcher {
             })();
             let _ = tx.send(Message::Initialized(result));
         });
+    }
+
+    fn configure_updater(&mut self, ctx: &egui::Context, source: Arc<dyn Source>) {
+        let mut updater = Updater::new(
+            AppInfo {
+                id: "craftworks".into(),
+                display_name: "Craftworks".into(),
+                repo: "treeforjs/craftworks".into(),
+                current: env!("CARGO_PKG_VERSION").into(),
+                public_key: select_key(option_env!("CRAFTWORKS_UPDATE_PUBLIC_KEY"), option_env!("CRAFT_UPDATE_PUBLIC_KEY")).map(str::to_owned),
+                prereleases: false,
+            },
+            source,
+        );
+        let repaint = ctx.clone();
+        updater.on_change(move || repaint.request_repaint());
+        updater.check();
+        self.updater = Some(updater);
+    }
+
+    fn check_launcher(&mut self, ctx: &egui::Context) {
+        if let Some(updater) = &mut self.updater {
+            updater.check();
+        } else {
+            self.configure_updater(ctx, Arc::new(GitHub::new(format!("Craftworks/{}", env!("CARGO_PKG_VERSION")))));
+        }
+    }
+
+    fn launcher_update_state(&self) -> Option<&State> {
+        self.updater.as_ref().map(Updater::state).or(self.preview_update.as_ref())
+    }
+
+    fn checking_updates(&self) -> bool {
+        self.checking || matches!(self.launcher_update_state(), Some(State::Checking | State::Downloading { .. }))
     }
 
     fn spawn(&self, ctx: &egui::Context, kind: Job, work: impl FnOnce(Sender<Message>) + Send + 'static) {
@@ -314,6 +342,7 @@ impl Launcher {
     }
 
     fn check(&mut self, ctx: &egui::Context) {
+        self.check_launcher(ctx);
         if self.checking || self.initializing {
             return;
         }
@@ -323,9 +352,6 @@ impl Launcher {
             return;
         };
         self.checking = true;
-        if let Some(updater) = &mut self.updater {
-            updater.check();
-        }
         let repaint = ctx.clone();
         self.spawn(ctx, Job::Check, move |tx| {
             for app in APPS {
@@ -622,6 +648,7 @@ impl Launcher {
     fn dispatch(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Check => self.check(ctx),
+            Action::CheckLauncher => self.check_launcher(ctx),
             Action::Install(app) => {
                 if self.active.is_none()
                     && self.queue.is_empty()
@@ -754,6 +781,33 @@ impl Launcher {
             view.available = Some(Availability { release: None, asset: None, blocked: Some("No published release yet".into()) });
         }
         app.checked_at = Some(Instant::now());
+        app.preview_update = Some(State::UpToDate);
+        app
+    }
+
+    /// A network-free fixture showing an available Craftworks release.
+    pub fn preview_launcher_update(appearance: Appearance) -> Self {
+        let mut app = Self::preview(appearance);
+        if let Some(version) = Version::parse("9.9.9") {
+            app.preview_update = Some(State::Available(craft_update::Offer {
+                release: Release {
+                    version,
+                    tag: "craftworks-v9.9.9".into(),
+                    page: format!("{RELEASES}/tag/craftworks-v9.9.9"),
+                    notes: String::new(),
+                    assets: Vec::new(),
+                },
+                kind: craft_update::InstallKind::Other,
+                install: Err("Download the installer from the release page.".into()),
+            }));
+        }
+        app
+    }
+
+    /// A network-free fixture showing an active Craftworks release check.
+    pub fn preview_launcher_checking(appearance: Appearance) -> Self {
+        let mut app = Self::preview(appearance);
+        app.preview_update = Some(State::Checking);
         app
     }
 
@@ -767,6 +821,7 @@ impl Launcher {
             view.check_error = Some("Couldn't check for updates: the update server is unavailable. Installed apps are ready to open.".into());
         }
         app.checked_at = Some(Instant::now());
+        app.preview_update = Some(State::Failed(Error::Network("The update server is unavailable.".into())));
         app
     }
 
@@ -834,7 +889,6 @@ impl Launcher {
                 let narrow = ui.available_width() < 520.0;
                 ui.horizontal(|ui| {
                     ui.heading(RichText::new("Craftworks").size(26.0));
-                    ui.label(RichText::new(env!("CARGO_PKG_VERSION")).small().color(t.text_muted));
                     if !narrow {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.header_actions(ui));
                     }
@@ -849,8 +903,9 @@ impl Launcher {
                 let update_count = self.apps.iter().filter(|view| view.installed.is_some() && view.newer_release().is_some()).count();
                 let install_count = self.apps.iter().filter(|view| view.installed.is_none() && view.newer_release().is_some()).count();
                 ui.horizontal_wrapped(|ui| {
-                    ui.add_enabled_ui(!self.checking && !self.initializing, |ui| {
-                        if craft_ui::button(ui, if self.checking { "Checking…" } else { "Check for updates" }, Variant::Primary).clicked() {
+                    ui.add_enabled_ui(!self.checking_updates(), |ui| {
+                        if craft_ui::button(ui, if self.checking_updates() { "Checking…" } else { "Check for updates" }, Variant::Primary).clicked()
+                        {
                             action = Some(Action::Check);
                         }
                     });
@@ -869,6 +924,8 @@ impl Launcher {
                     });
                 });
                 ui.add_space(8.0);
+                self.launcher_update_status(ui, &t, &mut action);
+                ui.add_space(4.0);
                 let status = if self.initializing {
                     "Finding your installed apps…"
                 } else if self.checking {
@@ -936,21 +993,6 @@ impl Launcher {
                 if let Some(manager) = &self.manager {
                     ui.label(RichText::new(format!("App location · {}", manager.root().display())).small().color(t.text_muted));
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.hyperlink_to("Craftworks releases", RELEASES);
-                    if let Some(updater) = &self.updater {
-                        match updater.state() {
-                            State::Available(offer) | State::Ready(offer) => {
-                                ui.label(format!("Craftworks {} is available.", offer.release.version));
-                                ui.hyperlink_to("Get the new launcher", &offer.release.page);
-                            }
-                            State::Failed(_) => {
-                                ui.label(RichText::new("Launcher update check unavailable.").small().color(t.text_muted));
-                            }
-                            _ => {}
-                        }
-                    }
-                });
             });
         });
         if let Some(action) = action {
@@ -963,6 +1005,35 @@ impl Launcher {
         self.previous_removal_dialog(&ctx);
         self.locate_previous_dialog(&ctx);
         self.command_palette(&ctx, busy);
+    }
+
+    fn launcher_update_status(&self, ui: &mut egui::Ui, t: &craft_ui::Tokens, action: &mut Option<Action>) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("Craftworks {}", env!("CARGO_PKG_VERSION"))).small().color(t.text_muted));
+            match self.launcher_update_state() {
+                Some(State::Checking | State::Downloading { .. }) => {
+                    ui.spinner();
+                    ui.label(RichText::new("Checking Craftworks updates…").small().color(t.text_muted));
+                }
+                Some(State::UpToDate) => {
+                    ui.label(RichText::new("Up to date").small().color(t.success));
+                }
+                Some(State::Available(offer) | State::Ready(offer)) => {
+                    ui.label(RichText::new(format!("Version {} available", offer.release.version)).small().color(t.success));
+                    ui.hyperlink_to("Download Craftworks update", &offer.release.page);
+                }
+                Some(State::Failed(error)) => {
+                    ui.add(egui::Label::new(RichText::new("Couldn't check Craftworks updates.").small().color(t.danger)).wrap())
+                        .on_hover_text(error.to_string());
+                    if craft_ui::button(ui, "Retry Craftworks check", Variant::Ghost).clicked() {
+                        *action = Some(Action::CheckLauncher);
+                    }
+                }
+                Some(State::Idle) | None => {
+                    ui.label(RichText::new("Updates not checked").small().color(t.text_muted));
+                }
+            }
+        });
     }
 
     fn header_actions(&mut self, ui: &mut egui::Ui) {
@@ -1135,7 +1206,7 @@ impl Launcher {
             return;
         }
         let mut items = vec![
-            PaletteItem::command("check", "Check for updates").enabled(!self.initializing && !self.checking),
+            PaletteItem::command("check", "Check for updates").enabled(!self.checking_updates()),
             PaletteItem::command("settings", "Appearance and display scale").shortcut("Ctrl+,"),
         ];
         for view in &self.apps {
@@ -1394,6 +1465,126 @@ fn card(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct ReleaseChecks {
+        requests: std::sync::Mutex<Vec<String>>,
+        fail_launcher: AtomicBool,
+    }
+
+    impl Source for ReleaseChecks {
+        fn get(&self, url: &str, _: u64) -> Result<Vec<u8>, Error> {
+            self.requests.lock().map_err(|_| Error::Network("test request log unavailable".into()))?.push(url.into());
+            if url.contains("/craftworks/") && self.fail_launcher.load(Ordering::Relaxed) {
+                return Err(Error::Network("launcher check unavailable".into()));
+            }
+            Ok(b"[]".to_vec())
+        }
+
+        fn download(&self, _: &str, _: u64, _: &mut dyn FnMut(&[u8]) -> Result<(), Error>) -> Result<(), Error> {
+            Err(Error::Network("update checks must not download installers".into()))
+        }
+    }
+
+    struct TestLibrary(PathBuf);
+
+    impl TestLibrary {
+        fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let base = std::fs::canonicalize(std::env::temp_dir())?;
+            let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+            let path = base.join(format!("craftworks-check-test-{}-{unique}", std::process::id()));
+            std::fs::create_dir(&path)?;
+            Ok(Self(std::fs::canonicalize(path)?))
+        }
+    }
+
+    impl Drop for TestLibrary {
+        fn drop(&mut self) {
+            // Only the newly created, canonical fixture directory can be removed.
+            if std::fs::canonicalize(&self.0).ok().as_ref() == Some(&self.0)
+                && self.0.file_name().is_some_and(|name| name.to_string_lossy().starts_with("craftworks-check-test-"))
+            {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    fn finish_checks(app: &mut Launcher, ctx: &egui::Context) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            app.poll(ctx);
+            if !app.checking && !matches!(app.launcher_update_state(), Some(State::Checking)) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "mock update checks did not complete");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn check_for_updates_requests_all_four_repositories() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = egui::Context::default();
+        let source = Arc::new(ReleaseChecks::default());
+        let fixture = TestLibrary::new()?;
+        let mut app = Launcher::empty();
+        app.manager = Some(Manager::new(fixture.0.clone(), source.clone())?);
+        app.configure_updater(&ctx, source.clone());
+        finish_checks(&mut app, &ctx);
+        source.requests.lock().map_err(|_| "request log unavailable")?.clear();
+        // No real previous-install scans are needed for this network-only fixture.
+        for view in &mut app.apps {
+            view.previous_scanning = true;
+        }
+        app.check(&ctx);
+        finish_checks(&mut app, &ctx);
+        let requests = source.requests.lock().map_err(|_| "request log unavailable")?;
+        assert_eq!(requests.len(), 4);
+        for repository in ["craftworks", "pdfcraft", "vectorcraft", "photocraft"] {
+            assert!(requests.iter().any(|url| url.contains(&format!("/treeforjs/{repository}/releases?"))));
+        }
+        assert!(matches!(app.launcher_update_state(), Some(State::UpToDate)));
+        Ok(())
+    }
+
+    #[test]
+    fn startup_launcher_check_and_retry_survive_library_initialization_failure() {
+        let ctx = egui::Context::default();
+        let source = Arc::new(ReleaseChecks::default());
+        source.fail_launcher.store(true, Ordering::Relaxed);
+        let mut app = Launcher::empty();
+        app.initializing = true;
+        app.configure_updater(&ctx, source.clone());
+        app.check(&ctx);
+        let _ = app.tx.send(Message::Initialized(Err(Error::Install("library unavailable".into()))));
+        finish_checks(&mut app, &ctx);
+        assert!(app.manager.is_none() && app.fatal_error.is_some());
+        assert!(matches!(app.launcher_update_state(), Some(State::Failed(_))));
+        source.fail_launcher.store(false, Ordering::Relaxed);
+        app.dispatch(&ctx, Action::CheckLauncher);
+        finish_checks(&mut app, &ctx);
+        assert!(matches!(app.launcher_update_state(), Some(State::UpToDate)));
+        assert!(app.fatal_error.is_some());
+    }
+
+    #[test]
+    fn a_failed_launcher_check_does_not_block_catalog_checks() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = egui::Context::default();
+        let source = Arc::new(ReleaseChecks::default());
+        source.fail_launcher.store(true, Ordering::Relaxed);
+        let fixture = TestLibrary::new()?;
+        let mut app = Launcher::empty();
+        app.manager = Some(Manager::new(fixture.0.clone(), source.clone())?);
+        app.configure_updater(&ctx, source);
+        for view in &mut app.apps {
+            view.previous_scanning = true;
+        }
+        app.check(&ctx);
+        finish_checks(&mut app, &ctx);
+        assert!(matches!(app.launcher_update_state(), Some(State::Failed(_))));
+        assert!(app.apps.iter().all(|view| view.available.is_some() && view.check_error.is_none()));
+        assert!(app.fatal_error.is_none());
+        Ok(())
+    }
+
     #[test]
     fn launcher_draws_in_every_mode_and_size() {
         for appearance in Appearance::ALL {
@@ -1586,6 +1777,8 @@ mod tests {
                 Launcher::preview_offline(Appearance::Dark),
                 Launcher::preview_without_key(Appearance::Light),
                 Launcher::preview_previous(Appearance::Dark),
+                Launcher::preview_launcher_update(Appearance::Light),
+                Launcher::preview_launcher_checking(Appearance::Dark),
             ] {
                 let ctx = egui::Context::default();
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
