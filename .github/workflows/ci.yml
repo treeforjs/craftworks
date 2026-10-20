@@ -104,6 +104,8 @@ jobs:
       - name: Release tag checks
         if: runner.os == 'Linux'
         run: bash packaging/signing/test-version-tag.sh
+      - name: Release feed collection checks
+        run: python packaging/test-prepare-release-feeds.py
       - name: Launcher screenshots (software Vulkan)
         if: runner.os == 'Linux'
         run: cargo run -p craftworks --example launcher_gallery -- target/launcher-gallery

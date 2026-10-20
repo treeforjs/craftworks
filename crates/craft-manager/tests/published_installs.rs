@@ -8,8 +8,11 @@ use std::io;
 use std::sync::Arc;
 
 use craft_manager::{APPS, App, Manager};
-use craft_update::GitHub;
 use tempfile::TempDir;
+
+#[path = "../../craft-update/tests/support/published_source.rs"]
+mod published_source;
+use published_source::PublishedSource;
 
 fn trusted_key(app: App) -> Result<String, io::Error> {
     let variable = format!("{}_UPDATE_PUBLIC_KEY", app.id.to_ascii_uppercase());
@@ -29,7 +32,7 @@ fn trusted_key(app: App) -> Result<String, io::Error> {
 fn installs_all_published_apps_with_verified_downloads() -> Result<(), Box<dyn Error>> {
     let temporary = TempDir::new()?;
     let temporary_root = fs::canonicalize(temporary.path())?;
-    let source = Arc::new(GitHub::new("Craftworks-published-install-test"));
+    let source = Arc::new(PublishedSource::new("Craftworks-published-install-test"));
     let mut manager = Manager::new(temporary_root.join("library"), source.clone())?;
     for app in APPS {
         manager = manager.with_public_key(app.id, &trusted_key(app)?)?;

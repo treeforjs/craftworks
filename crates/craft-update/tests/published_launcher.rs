@@ -5,7 +5,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use craft_update::{AppInfo, GitHub, InstallKind, State, Updater, Version};
+use craft_update::{AppInfo, InstallKind, State, Updater, Version};
+
+#[path = "support/published_source.rs"]
+mod published_source;
+use published_source::PublishedSource;
 
 #[test]
 #[ignore = "requires the public Craftworks release feed"]
@@ -21,7 +25,7 @@ fn discovers_a_newer_published_launcher_without_downloading() {
             public_key: None,
             prereleases: false,
         },
-        Arc::new(GitHub::new("Craftworks-published-launcher-test")),
+        Arc::new(PublishedSource::new("Craftworks-published-launcher-test")),
     )
     .with_install_kind(InstallKind::Other);
     updater.check();

@@ -90,8 +90,15 @@ jobs:
       - name: Build the current-user installer and portable zip
         shell: pwsh
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
+      - name: Fetch authenticated public release feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: python packaging/prepare-release-feeds.py
       - name: Verify complete signed app installations
         timeout-minutes: 10
+        env:
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
         run: |
           cargo test --locked -p craft-update --test published_launcher -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Craftworks release discovery failed.' }
@@ -154,8 +161,15 @@ jobs:
           name: window-frame-linux-x86_64
           path: target/window-frame/
           if-no-files-found: warn
+      - name: Fetch authenticated public release feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: python3 packaging/prepare-release-feeds.py
       - name: Verify complete signed app installations
         timeout-minutes: 10
+        env:
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
         run: |
           cargo test --locked -p craft-update --test published_launcher -- --ignored --nocapture
           cargo test --locked -p craft-manager --test published_installs -- --ignored --nocapture
