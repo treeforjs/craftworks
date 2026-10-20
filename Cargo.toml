@@ -1,3 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/*"]
+# Shared libraries remain the default build, including the web compatibility gate.
+# The native hub is built explicitly with `-p craftworks`.
+default-members = ["crates/craft-ui", "crates/craft-update", "crates/craft-manager"]
