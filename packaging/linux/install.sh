@@ -16,7 +16,7 @@ mkdir -p "$DEST" "$BIN" "$DATA/applications"
 # Replacing a running Linux executable by rename lets that process finish normally.
 install -m755 "$SOURCE/craftworks" "$DEST/craftworks.new"
 mv -f -- "$DEST/craftworks.new" "$DEST/craftworks"
-for file in LICENSE-MIT LICENSE-APACHE README.md; do
+for file in LICENSE-MIT LICENSE-APACHE README.md THIRD-PARTY-NOTICES.txt; do
   install -m644 "$SOURCE/$file" "$DEST/$file"
 done
 install -m755 "$SOURCE/uninstall.sh" "$DEST/uninstall.sh"

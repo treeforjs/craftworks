@@ -166,9 +166,11 @@ jobs:
           target/release/craftworks --version
           mkdir -p target/install-smoke
           tar -xzf "dist/release/craftworks-$VERSION-linux-${{ matrix.arch }}.tar.gz" -C target/install-smoke
+          cmp THIRD-PARTY-NOTICES.txt "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/THIRD-PARTY-NOTICES.txt"
           export HOME="$RUNNER_TEMP/craftworks-user"
           export XDG_DATA_HOME="$HOME/.local/share"
           bash "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/install.sh"
+          cmp THIRD-PARTY-NOTICES.txt "$XDG_DATA_HOME/craftworks-launcher/THIRD-PARTY-NOTICES.txt"
           desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
           "$HOME/.local/bin/craftworks" --version
           bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
@@ -177,6 +179,7 @@ jobs:
           bash "$setup" --dry-run
           test ! -e "$HOME/.local/bin/craftworks"
           bash "$setup"
+          cmp THIRD-PARTY-NOTICES.txt "$XDG_DATA_HOME/craftworks-launcher/THIRD-PARTY-NOTICES.txt"
           desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
           "$HOME/.local/bin/craftworks" --version
           bash "$setup"

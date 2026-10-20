@@ -38,7 +38,7 @@ fi
 if [[ -L "$DESKTOP" || ( -e "$DESKTOP" && ! -f "$DESKTOP" ) ]]; then
   fail "$DESKTOP must be a regular file. Move it before installing."
 fi
-FILES=(craftworks LICENSE-MIT LICENSE-APACHE README.md uninstall.sh)
+FILES=(craftworks LICENSE-MIT LICENSE-APACHE README.md THIRD-PARTY-NOTICES.txt uninstall.sh)
 HAVE_PREVIOUS=false
 for file in "${FILES[@]}"; do
   if [[ -L "$DEST/$file" || ( -e "$DEST/$file" && ! -f "$DEST/$file" ) ]]; then
@@ -61,7 +61,8 @@ payload() { tail -n +"$PAYLOAD_LINE" -- "$SELF"; }
 ACTUAL_SHA256="$(payload | sha256sum | awk '{print $1}')"
 [[ "$ACTUAL_SHA256" == "$PAYLOAD_SHA256" ]] || fail 'The embedded package checksum does not match. Download setup again.'
 EXPECTED="$(printf '%s\n' "$BASENAME/" "$BASENAME/craftworks" "$BASENAME/install.sh" \
-  "$BASENAME/uninstall.sh" "$BASENAME/LICENSE-MIT" "$BASENAME/LICENSE-APACHE" "$BASENAME/README.md" | LC_ALL=C sort)"
+  "$BASENAME/uninstall.sh" "$BASENAME/LICENSE-MIT" "$BASENAME/LICENSE-APACHE" "$BASENAME/README.md" \
+  "$BASENAME/THIRD-PARTY-NOTICES.txt" | LC_ALL=C sort)"
 ACTUAL="$(payload | tar -tzf - | LC_ALL=C sort)"
 [[ "$ACTUAL" == "$EXPECTED" ]] || fail 'The embedded package contains unexpected or missing files.'
 if ! payload | tar -tvzf - | awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" {exit 1}'; then

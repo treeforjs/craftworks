@@ -40,3 +40,6 @@ The shared pieces:
 [Dark appearance](docs/images/launcher-dark.png) · [The shared editing shell](docs/images/shell-light.png)
 
 MIT or Apache-2.0, at your option.
+
+Linux packages include the Wayland frame and fallback-font notices in
+`THIRD-PARTY-NOTICES.txt`.
