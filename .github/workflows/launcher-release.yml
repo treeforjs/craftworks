@@ -245,11 +245,7 @@ jobs:
           [[ "$VERSION" != *-* ]] || pre=(--prerelease)
           tag_args=(--verify-tag)
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            tagged_sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null || true)"
-            if [[ -n "$tagged_sha" && "$tagged_sha" != "$GITHUB_SHA" ]]; then
-              echo "::error::The version tag already points to another commit; increment the version."
-              exit 1
-            fi
+            bash "$GITHUB_WORKSPACE/packaging/signing/check-version-tag.sh" "$tag" "$GITHUB_SHA"
             tag_args=(--target "$GITHUB_SHA")
           fi
           gh release create "$tag" "${tag_args[@]}" --draft --title "Craftworks $VERSION" \

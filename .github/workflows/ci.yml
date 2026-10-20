@@ -101,6 +101,9 @@ jobs:
       - name: Signing configuration checks
         if: runner.os == 'Linux'
         run: python3 packaging/signing/test-check-key.py
+      - name: Release tag checks
+        if: runner.os == 'Linux'
+        run: bash packaging/signing/test-version-tag.sh
       - name: Launcher screenshots (software Vulkan)
         if: runner.os == 'Linux'
         run: cargo run -p craftworks --example launcher_gallery -- target/launcher-gallery
