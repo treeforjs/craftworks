@@ -92,13 +92,20 @@ jobs:
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
       - name: Check the portable binary
         shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $archive = Get-Item dist/release/*-portable.zip
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath target/portable-smoke
           $binary = Get-ChildItem target/portable-smoke -Filter craftworks.exe -Recurse | Select-Object -First 1
           if (-not $binary) { throw 'Portable archive has no Craftworks binary.' }
-          & $binary.FullName --version
-          if ($LASTEXITCODE -ne 0) { throw 'Portable binary smoke check failed.' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'craftworks-version.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'craftworks-version-error.txt'
+          $process = Start-Process -FilePath $binary.FullName -ArgumentList '--version' -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($process.ExitCode -ne 0) { throw "Portable binary smoke check failed: $($process.ExitCode)." }
+          $reported = (Get-Content -LiteralPath $stdout -Raw).Trim()
+          if ($reported -ne "Craftworks $env:VERSION") { throw 'Portable binary reported an unexpected version.' }
+          Write-Output $reported
       - uses: actions/upload-artifact@v4
         with:
           name: craftworks-windows-${{ matrix.arch }}
@@ -139,6 +146,17 @@ jobs:
           export XDG_DATA_HOME="$HOME/.local/share"
           bash "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/install.sh"
           desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
+          "$HOME/.local/bin/craftworks" --version
+          bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
+          test ! -e "$HOME/.local/bin/craftworks"
+          setup="dist/release/craftworks-$VERSION-linux-${{ matrix.arch }}-setup.sh"
+          bash "$setup" --dry-run
+          test ! -e "$HOME/.local/bin/craftworks"
+          bash "$setup"
+          desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
+          "$HOME/.local/bin/craftworks" --version
+          bash "$setup"
+          find "$XDG_DATA_HOME/craftworks-launcher-backups" -path '*/launcher/craftworks' -type f -print -quit | grep -q .
           "$HOME/.local/bin/craftworks" --version
           bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
           test ! -e "$HOME/.local/bin/craftworks"
@@ -188,8 +206,9 @@ jobs:
               for arch in ("x64", "arm64")
               for suffix in ("setup.exe", "portable.zip")
           } | {
-              f"craftworks-{version}-linux-{arch}.tar.gz"
+              f"craftworks-{version}-linux-{arch}{suffix}"
               for arch in ("x86_64", "aarch64")
+              for suffix in (".tar.gz", "-setup.sh")
           }
           actual = {path.name for path in Path(".").iterdir() if path.is_file()}
           if actual != expected or any(Path(name).stat().st_size == 0 for name in expected):

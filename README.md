@@ -18,7 +18,7 @@ cargo run -p craftworks
 
 Downloadable Craftworks builds are produced by
 [`launcher-release.yml`](.github/workflows/launcher-release.yml): a Windows installer and
-portable zip, and a Linux tarball with a user installer. Update the launcher itself by running
+portable zip, and a bundled Linux setup script or tarball with a user installer. Update the launcher itself by running
 the newer installer; this first version centralizes updates for the three apps.
 
 The shared pieces:

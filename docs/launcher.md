@@ -23,8 +23,20 @@ ARM PC. It installs into `%LOCALAPPDATA%\Programs\Craftworks` by default, adds a
 entry and appears in Windows Installed apps. No administrator access is needed. The portable
 zip can also be unpacked anywhere; app downloads still use your normal user data folder.
 
-On Linux, unpack the matching `craftworks-<version>-linux-x86_64.tar.gz` or `aarch64` tarball,
-then run:
+On Linux, download `craftworks-<version>-linux-x86_64-setup.sh` (or `aarch64` on an ARM
+computer). From the download folder, run it as your normal user:
+
+```sh
+bash craftworks-0.1.0-linux-x86_64-setup.sh --dry-run
+bash craftworks-0.1.0-linux-x86_64-setup.sh
+```
+
+Use the actual downloaded version and architecture in those commands. The setup file contains
+the prebuilt launcher and checks its bundled payload before installing. `--dry-run` previews
+the installation without writing files. No compiler or sudo is needed. It backs up an existing
+Craftworks launcher before replacement and keeps managed apps and preferences.
+
+The release also includes a tarball containing the launcher and user installer:
 
 ```sh
 cd craftworks-<version>-linux-<arch>
@@ -35,6 +47,8 @@ The installer adds an application menu entry and `~/.local/bin/craftworks`. The 
 under `$XDG_DATA_HOME/craftworks-launcher` (normally `~/.local/share/craftworks-launcher`).
 Run its `uninstall.sh` to remove the launcher. Linux releases are built on Ubuntu 22.04 and
 need a desktop with glibc 2.35 or newer and the usual X11 or Wayland/OpenGL libraries.
+
+Launch **Craftworks** from your application menu, or run `~/.local/bin/craftworks`.
 
 Open Craftworks, check for releases, then choose Install, Update or Open for each app. App
 downloads are installed for the current user. Existing MSI, distribution-package, Flatpak or

@@ -13,12 +13,27 @@ if [[ "${1:-}" != --skip-build ]]; then
   cargo build --locked --release --package craftworks
 fi
 TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+mkdir -p "$TARGET"
+TARGET="$(cd -- "$TARGET" && pwd -P)"
 BASENAME="craftworks-$VERSION-linux-$ARCH"
 WORK="$(mktemp -d "$TARGET/craftworks-package.XXXXXX")"
+cleanup() {
+  case "$WORK" in "$TARGET"/craftworks-package.*) rm -rf -- "$WORK" ;; esac
+}
+trap cleanup EXIT
 STAGE="$WORK/$BASENAME"
-mkdir -p "$STAGE" "$ROOT/dist/release"
+DIST="${DIST:-$ROOT/dist/release}"
+mkdir -p "$STAGE" "$DIST"
 install -m755 "$TARGET/release/craftworks" "$STAGE/craftworks"
 install -m755 packaging/linux/install.sh packaging/linux/uninstall.sh "$STAGE/"
 install -m644 LICENSE-MIT LICENSE-APACHE README.md "$STAGE/"
-tar -C "$WORK" -czf "$ROOT/dist/release/$BASENAME.tar.gz" "$BASENAME"
-printf 'Created %s\n' "$ROOT/dist/release/$BASENAME.tar.gz"
+ARCHIVE="$DIST/$BASENAME.tar.gz"
+SETUP="$DIST/$BASENAME-setup.sh"
+tar -C "$WORK" -czf "$ARCHIVE" "$BASENAME"
+PAYLOAD_SHA256="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@ARCH@/$ARCH/g" \
+  -e "s/@BASENAME@/$BASENAME/g" -e "s/@PAYLOAD_SHA256@/$PAYLOAD_SHA256/g" \
+  packaging/linux/setup-header.sh >"$SETUP"
+cat "$ARCHIVE" >>"$SETUP"
+chmod 755 "$SETUP"
+printf 'Created %s\nCreated %s\n' "$ARCHIVE" "$SETUP"
