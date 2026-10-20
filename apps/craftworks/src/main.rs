@@ -22,7 +22,7 @@ fn main() -> std::process::ExitCode {
         }
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([920.0, 800.0]).with_min_inner_size([360.0, 360.0]),
+        viewport: egui::ViewportBuilder::default().with_decorations(true).with_inner_size([920.0, 800.0]).with_min_inner_size([360.0, 360.0]),
         ..Default::default()
     };
     match eframe::run_native("Craftworks", options, Box::new(|cc| Ok(Box::new(craftworks::Launcher::new(cc))))) {

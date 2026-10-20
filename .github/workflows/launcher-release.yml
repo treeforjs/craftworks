@@ -141,6 +141,19 @@ jobs:
           key: craftworks-linux-${{ matrix.arch }}
       - name: Build and package
         run: bash packaging/linux/package.sh
+      - name: Install Wayland window-check tools
+        if: matrix.arch == 'x86_64'
+        run: sudo apt-get install -y --no-install-recommends weston xvfb scrot libegl1-mesa libgl1-mesa-dri fonts-cantarell
+      - name: Check the native Wayland window frame
+        if: matrix.arch == 'x86_64'
+        timeout-minutes: 3
+        run: bash packaging/linux/check-window-frame.sh target/release/craftworks target/window-frame
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.arch == 'x86_64'
+        with:
+          name: window-frame-linux-x86_64
+          path: target/window-frame/
+          if-no-files-found: warn
       - name: Verify complete signed app installations
         timeout-minutes: 10
         run: |
