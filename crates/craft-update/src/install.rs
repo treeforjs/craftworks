@@ -1,13 +1,18 @@
 //! Installing a verified download, once the app is ready to quit.
 
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+use tempfile::TempDir;
 
 use crate::install_kind::strip_deleted;
-use crate::{AppInfo, Error, InstallKind, Version};
+use crate::{AppInfo, Error, InstallKind, Version, verify::Hasher};
 
 /// A downloaded, verified update waiting to be installed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Prepared {
     /// How this copy is installed (decides how the update is applied).
     pub kind: InstallKind,
@@ -15,7 +20,30 @@ pub struct Prepared {
     pub file: PathBuf,
     /// The version it installs.
     pub version: Version,
+    download: Arc<VerifiedDownload>,
 }
+
+#[derive(Debug)]
+struct VerifiedDownload {
+    directory: Mutex<Option<TempDir>>,
+    kind: InstallKind,
+    file: PathBuf,
+    version: Version,
+    digest: [u8; 32],
+    size: u64,
+}
+
+impl PartialEq for Prepared {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.file == other.file
+            && self.version == other.version
+            && self.download.digest == other.download.digest
+            && self.download.size == other.download.size
+    }
+}
+
+impl Eq for Prepared {}
 
 /// What [`Prepared::apply`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,8 +55,7 @@ pub enum Applied {
     InstallerStarted,
 }
 
-/// Where downloads wait: a folder only this user can write, so nothing can swap a verified
-/// file before it is installed.
+/// Parent of isolated per-download folders. AppImage staging stays on the target filesystem.
 pub(crate) fn download_dir(app: &AppInfo, kind: &InstallKind) -> Result<PathBuf, Error> {
     // An AppImage is replaced by renaming, which needs the new file on the same disk.
     if let InstallKind::AppImage(path) = kind {
@@ -47,70 +74,160 @@ pub(crate) fn download_dir(app: &AppInfo, kind: &InstallKind) -> Result<PathBuf,
     Ok(base.join(&app.display_name).join("updates"))
 }
 
-/// The file a download of `asset` is written to in `dir`.
-pub(crate) fn download_path(dir: &Path, kind: &InstallKind, asset: &str) -> PathBuf {
-    match kind {
-        // Hidden beside the AppImage until it replaces it.
-        InstallKind::AppImage(_) => dir.join(format!(".{asset}.update")),
-        _ => dir.join(asset),
+/// Validate parent directories without following links or Windows reparse points.
+fn regular_parents(path: &Path) -> Result<(), Error> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err(Error::Install("the update folder must be an absolute normal path".into()));
     }
-}
-
-/// Makes the download folder (private to this user on Unix) and removes earlier downloads.
-pub(crate) fn prepare_dir(dir: &Path, kind: &InstallKind) -> Result<(), Error> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(dir).map_err(|e| Error::Install(format!("can't create {}: {e}", dir.display())))?;
-    if matches!(kind, InstallKind::AppImage(_)) {
-        // The AppImage's own folder: leave everything but our hidden partial downloads alone.
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with('.') && name.ends_with(".AppImage.update") {
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-        }
-        return Ok(());
-    }
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for e in entries.flatten() {
-            if e.file_type().is_ok_and(|t| t.is_file()) {
-                let _ = std::fs::remove_file(e.path());
-            }
+    for parent in path.ancestors() {
+        match std::fs::symlink_metadata(parent) {
+            Ok(meta) if meta.is_dir() && !redirected(&meta) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(Error::Install("the update folder passes through a link or special file".into())),
         }
     }
     Ok(())
 }
 
+fn redirected(meta: &Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
+/// Allocate a fresh private folder; never sweep another download or a user's files.
+pub(crate) fn staging_dir(base: &Path) -> Result<TempDir, Error> {
+    regular_parents(base)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(base).map_err(|e| Error::Install(format!("can't create {}: {e}", base.display())))?;
+    regular_parents(base)?;
+    tempfile::Builder::new().prefix(".craft-update-").tempdir_in(base).map_err(|e| Error::Install(format!("can't stage an update: {e}")))
+}
+
+fn unchanged(before: &Metadata, after: &Metadata) -> bool {
+    if !after.is_file() || redirected(after) || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn verified_file(path: &Path, size: u64, digest: &[u8; 32], _kind: &InstallKind) -> Result<File, Error> {
+    regular_parents(path.parent().ok_or_else(|| Error::Install("the update file has no folder".into()))?)?;
+    let before = std::fs::symlink_metadata(path).map_err(|e| Error::Install(format!("the update is unavailable: {e}")))?;
+    if !before.is_file() || redirected(&before) || before.len() != size {
+        return Err(Error::Verify("the prepared update was replaced or changed; download it again".into()));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        // Hold a read-only sharing lease through launch: no writer or rename can replace it.
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(if matches!(_kind, InstallKind::AppImage(_)) { 1 | 4 } else { 1 });
+    }
+    let mut file = options.open(path).map_err(|e| Error::Install(format!("can't read the prepared update: {e}")))?;
+    let opened = file.metadata().map_err(|e| Error::Install(e.to_string()))?;
+    if !unchanged(&before, &opened) {
+        return Err(Error::Verify("the prepared update changed while opening it".into()));
+    }
+    let mut hasher = Hasher::default();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buffer).map_err(|e| Error::Install(format!("can't recheck the update: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
+        if total > size {
+            return Err(Error::Verify("the prepared update grew after verification".into()));
+        }
+        hasher.update(buffer.get(..n).ok_or_else(|| Error::Verify("invalid update read length".into()))?);
+    }
+    let after = std::fs::symlink_metadata(path).map_err(|e| Error::Install(e.to_string()))?;
+    if total != size || &hasher.finish() != digest || !unchanged(&opened, &after) {
+        return Err(Error::Verify("the prepared update no longer matches its signed checksum; download it again".into()));
+    }
+    Ok(file)
+}
+
 impl Prepared {
+    pub(crate) fn verified(directory: TempDir, kind: InstallKind, file: PathBuf, version: Version, digest: [u8; 32], size: u64) -> Self {
+        let download = Arc::new(VerifiedDownload {
+            directory: Mutex::new(Some(directory)),
+            kind: kind.clone(),
+            file: file.clone(),
+            version: version.clone(),
+            digest,
+            size,
+        });
+        Self { kind, file, version, download }
+    }
+
     /// Installs the update. Call it when the app is about to quit, after the person has saved
     /// their work: with `restart`, the new version opens once it is installed.
     ///
     /// Blocks while a Linux package manager runs (it asks for a password); returns at once on
     /// Windows, where the installer waits for this app to quit.
     pub fn apply(&self, restart: bool) -> Result<Applied, Error> {
-        if !self.file.is_file() {
-            return Err(Error::Install("the downloaded update is gone; check for updates again".into()));
+        let mut directory = self.download.directory.lock().map_err(|_| Error::Install("the prepared update is unavailable".into()))?;
+        let stage = directory.as_ref().ok_or_else(|| Error::Install("this prepared update was already applied".into()))?;
+        if self.file != self.download.file
+            || self.kind != self.download.kind
+            || self.version != self.download.version
+            || self.file.parent() != Some(stage.path())
+        {
+            return Err(Error::Verify("the prepared update's destination or metadata changed".into()));
         }
-        match &self.kind {
-            InstallKind::AppImage(target) => self.apply_appimage(target, restart),
+        let file = verified_file(&self.file, self.download.size, &self.download.digest, &self.kind)?;
+        let result = match &self.kind {
+            InstallKind::AppImage(target) => self.apply_appimage(target, restart, &file),
             InstallKind::WindowsMsi => self.apply_msi(restart),
             InstallKind::Deb | InstallKind::Rpm => self.apply_package(restart),
             other => Err(Error::Unsupported(format!("{other:?} copies don't update themselves"))),
+        };
+        drop(file);
+        // Taking drops synchronous staging. Only the deferred MSI installer retains it.
+        if result.is_ok()
+            && let Some(stage) = directory.take()
+            && self.kind == InstallKind::WindowsMsi
+        {
+            let _ = stage.keep();
         }
+        result
     }
 
-    fn apply_appimage(&self, target: &Path, restart: bool) -> Result<Applied, Error> {
+    fn apply_appimage(&self, target: &Path, restart: bool, file: &File) -> Result<Applied, Error> {
+        regular_parents(target.parent().ok_or_else(|| Error::Install("the AppImage has no folder".into()))?)?;
+        let target_meta = std::fs::symlink_metadata(target).map_err(|e| Error::Install(e.to_string()))?;
+        if !target_meta.is_file() || redirected(&target_meta) {
+            return Err(Error::Install("the AppImage target is a link or special file".into()));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.file, std::fs::Permissions::from_mode(0o755))
+            file.set_permissions(std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| Error::Install(format!("can't make the new AppImage runnable: {e}")))?;
         }
+        #[cfg(not(unix))]
+        let _ = file;
         // Atomic on one disk: the running copy keeps working from its open file until it quits.
         std::fs::rename(&self.file, target).map_err(|e| Error::Install(format!("can't replace {}: {e}", target.display())))?;
         if restart {
@@ -155,8 +272,12 @@ impl Prepared {
 
     fn apply_msi(&self, restart: bool) -> Result<Applied, Error> {
         let exe = std::env::current_exe().map_err(|e| Error::Install(e.to_string()))?;
-        let script = msi_script(&self.file, restart.then_some(exe.as_path()));
-        let mut cmd = Command::new("powershell.exe");
+        let script = msi_script(&self.file, &self.download.digest, self.download.size, std::process::id(), restart.then_some(exe.as_path()));
+        let root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| Error::Install("Windows did not provide its system directory".into()))?;
+        let mut cmd = Command::new(root.join("System32/WindowsPowerShell/v1.0/powershell.exe"));
         cmd.args([
             "-NoProfile",
             "-NonInteractive",
@@ -181,14 +302,23 @@ impl Prepared {
 /// The PowerShell that runs the installer once the app has quit, then reopens the app.
 /// Windows paths can't contain `"`, and `'` is doubled inside PowerShell's single quotes, so
 /// no path can break out of its string.
-fn msi_script(msi: &Path, reopen: Option<&Path>) -> String {
+fn msi_script(msi: &Path, digest: &[u8; 32], size: u64, pid: u32, reopen: Option<&Path>) -> String {
     let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
-    // Give the app a moment to quit; msiexec's Restart Manager handles one that is slow to.
-    let mut s =
-        format!("Start-Sleep -Seconds 2; Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i \"{}\" /passive /norestart' -Wait", quote(msi));
+    let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut s = format!(
+        "$ErrorActionPreference='Stop'; $f=$null; try{{$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; if($p -and -not $p.WaitForExit(60000)){{throw 'The app did not exit.'}}; $f=[IO.File]::Open('{}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); if($f.Length -ne {size}){{throw 'The update size changed.'}}; $sha=[Security.Cryptography.SHA256]::Create(); try{{$h=[BitConverter]::ToString($sha.ComputeHash($f)).Replace('-','').ToLowerInvariant()}}finally{{$sha.Dispose()}}; if($h -ne '{hash}'){{throw 'The update checksum changed.'}}; $u=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/msiexec.exe') -ArgumentList '/i \"{}\" /passive /norestart' -Wait -PassThru; if($u.ExitCode -notin @(0,1641,3010)){{throw 'Windows Installer did not complete.'}}; ",
+        quote(msi),
+        quote(msi)
+    );
     if let Some(exe) = reopen {
-        s.push_str(&format!("; Start-Process -FilePath '{}'", quote(exe)));
+        s.push_str(&format!("Start-Process -FilePath '{}'; ", quote(exe)));
     }
+    s.push_str("}catch{Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('The update could not be installed. Check for updates and try again.','Craft update') | Out-Null; exit 1}finally{if($f){$f.Dispose()}; ");
+    s.push_str(&format!(
+        "Remove-Item -LiteralPath '{}' -ErrorAction SilentlyContinue; [IO.Directory]::Delete('{}') }}",
+        quote(msi),
+        quote(msi.parent().unwrap_or_else(|| Path::new("")))
+    ));
     s
 }
 
@@ -212,18 +342,32 @@ fn spawn_detached(mut cmd: Command) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    fn prepared(base: &Path, kind: InstallKind, name: &str, bytes: &[u8]) -> Prepared {
+        let directory = staging_dir(base).unwrap();
+        let file = directory.path().join(name);
+        std::fs::write(&file, bytes).unwrap();
+        let mut hash = Hasher::default();
+        hash.update(bytes);
+        Prepared::verified(directory, kind, file, Version::parse("1.2.0").unwrap(), hash.finish(), bytes.len() as u64)
+    }
+
     #[test]
     fn the_windows_script_quotes_every_path() {
         let s = msi_script(
             Path::new(r"C:\Users\O'Neil & Co\AppData\Local\PdfCraft\updates\pdfcraft-1.2.0-windows-x64.msi"),
+            &[0xab; 32],
+            123,
+            456,
             Some(Path::new(r"C:\Program Files\PdfCraft\pdfcraft.exe")),
         );
         assert!(
             s.contains(r#"'/i "C:\Users\O''Neil & Co\AppData\Local\PdfCraft\updates\pdfcraft-1.2.0-windows-x64.msi" /passive /norestart'"#),
             "{s}"
         );
-        assert!(s.ends_with(r"Start-Process -FilePath 'C:\Program Files\PdfCraft\pdfcraft.exe'"), "{s}");
-        assert!(!msi_script(Path::new("a.msi"), None).contains("pdfcraft.exe"));
+        assert!(s.contains(r"Start-Process -FilePath 'C:\Program Files\PdfCraft\pdfcraft.exe'"), "{s}");
+        assert!(s.contains(&"ab".repeat(32)) && s.contains("$f.Length -ne 123") && s.contains("[IO.FileShare]::Read"));
+        assert!(s.contains("Get-Process -Id 456") && s.contains("finally") && s.contains("Remove-Item -LiteralPath"));
+        assert!(!msi_script(Path::new("a.msi"), &[0; 32], 1, 1, None).contains("pdfcraft.exe"));
         // UTF-16LE then base64: "a" is 61 00.
         assert_eq!(encode_powershell("a"), "YQA=");
     }
@@ -235,10 +379,8 @@ mod tests {
         let target = dir.path().join("pdfcraft.AppImage");
         std::fs::write(&target, b"old").unwrap();
         let kind = InstallKind::AppImage(target.clone());
-        prepare_dir(dir.path(), &kind).unwrap();
-        let file = download_path(dir.path(), &kind, "pdfcraft-1.2.0-linux-x86_64.AppImage");
-        std::fs::write(&file, b"new").unwrap();
-        let p = Prepared { kind, file: file.clone(), version: Version::parse("1.2.0").unwrap() };
+        let p = prepared(dir.path(), kind, "pdfcraft-1.2.0-linux-x86_64.AppImage", b"new");
+        let file = p.file.clone();
         assert_eq!(p.apply(false).unwrap(), Applied::Installed);
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         assert!(!file.exists());
@@ -251,26 +393,103 @@ mod tests {
     #[test]
     fn other_copies_refuse_to_apply() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("x.zip");
-        std::fs::write(&file, b"z").unwrap();
-        let p = Prepared { kind: InstallKind::WindowsPortable, file, version: Version::parse("1.0.0").unwrap() };
+        let p = prepared(dir.path(), InstallKind::WindowsPortable, "x.zip", b"z");
         assert!(matches!(p.apply(true), Err(Error::Unsupported(_))));
     }
 
     #[test]
-    fn earlier_downloads_are_cleared_but_not_the_users_files() {
+    fn independent_downloads_and_existing_user_files_are_never_swept() {
         let dir = tempfile::tempdir().unwrap();
         let app_image = dir.path().join("pdfcraft.AppImage");
         std::fs::write(&app_image, b"app").unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"mine").unwrap();
         std::fs::write(dir.path().join(".pdfcraft-1.1.0-linux-x86_64.AppImage.update"), b"stale").unwrap();
-        prepare_dir(dir.path(), &InstallKind::AppImage(app_image.clone())).unwrap();
+        let first = prepared(dir.path(), InstallKind::AppImage(app_image.clone()), "first.AppImage", b"first");
+        let second = prepared(dir.path(), InstallKind::AppImage(app_image.clone()), "second.AppImage", b"second");
+        assert_ne!(first.file.parent(), second.file.parent());
+        assert_eq!(std::fs::read(&first.file).unwrap(), b"first");
         assert!(app_image.exists() && dir.path().join("notes.txt").exists());
-        assert!(!dir.path().join(".pdfcraft-1.1.0-linux-x86_64.AppImage.update").exists());
+        assert!(dir.path().join(".pdfcraft-1.1.0-linux-x86_64.AppImage.update").exists());
+        let second_path = second.file.parent().unwrap().to_path_buf();
+        drop(second);
+        assert!(!second_path.exists());
+        assert!(first.file.exists());
         let updates = dir.path().join("updates");
         std::fs::create_dir(&updates).unwrap();
         std::fs::write(updates.join("old.msi"), b"old").unwrap();
-        prepare_dir(&updates, &InstallKind::WindowsMsi).unwrap();
-        assert!(!updates.join("old.msi").exists());
+        let ready = prepared(&updates, InstallKind::WindowsMsi, "new.msi", b"new");
+        assert!(updates.join("old.msi").exists());
+        drop(ready);
+        assert_eq!(std::fs::read(updates.join("old.msi")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn a_prepared_download_is_kept_until_the_last_owner_drops() {
+        let base = tempfile::tempdir().unwrap();
+        let first = prepared(base.path(), InstallKind::WindowsPortable, "x.zip", b"new");
+        let path = first.file.parent().unwrap().to_path_buf();
+        let second = first.clone();
+        drop(first);
+        assert!(path.exists());
+        drop(second);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn changed_payload_and_public_metadata_cannot_be_applied() {
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("App.AppImage");
+        std::fs::write(&target, b"old").unwrap();
+        let mut first = prepared(base.path(), InstallKind::AppImage(target.clone()), "x.AppImage", b"new");
+        std::fs::write(&first.file, b"bad").unwrap();
+        assert!(matches!(first.apply(false), Err(Error::Verify(_))));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        std::fs::write(&first.file, b"new").unwrap();
+        first.file = target.clone();
+        assert!(matches!(first.apply(false), Err(Error::Verify(_))));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_staging_and_changed_download_links_are_refused() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("App.AppImage");
+        std::fs::write(&target, b"old").unwrap();
+        let linked = base.path().join("linked");
+        symlink(base.path(), &linked).unwrap();
+        assert!(staging_dir(&linked).is_err());
+        let ready = prepared(base.path(), InstallKind::AppImage(target.clone()), "x.AppImage", b"new");
+        let unrelated = base.path().join("other");
+        std::fs::write(&unrelated, b"new").unwrap();
+        std::fs::remove_file(&ready.file).unwrap();
+        symlink(&unrelated, &ready.file).unwrap();
+        assert!(matches!(ready.apply(false), Err(Error::Verify(_))));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        drop(ready);
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_deferred_msi_script_parses_in_windows_powershell() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join("script.ps1");
+        std::fs::write(
+            &path,
+            msi_script(Path::new(r"C:\Users\O'Neil & Co\updates\x.msi"), &[0xab; 32], 123, 456, Some(Path::new(r"C:\Program Files\App\app.exe"))),
+        )
+        .unwrap();
+        let system = std::env::var_os("SystemRoot").unwrap();
+        let check = format!(
+            "$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile('{}',[ref]$t,[ref]$e) | Out-Null; if($e.Count){{$e | Out-String | Write-Error; exit 1}}",
+            path.to_string_lossy().replace('\'', "''")
+        );
+        let output = Command::new(PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", &check])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     }
 }

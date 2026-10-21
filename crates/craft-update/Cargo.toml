@@ -1,7 +1,7 @@
 [package]
 name = "craft-update"
 description = "In-app updates for the craft apps: check GitHub Releases, download, verify a signed checksum list, install and restart"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -19,6 +19,7 @@ base64 = "0.22"
 # The network and the installers exist only on the desktop; the web build gets version,
 # release and verification logic (and keeps opening the releases page).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "3"
 # rustls with ring and the OS's trusted roots only: no bundled root list (webpki-roots is
 # CDLA-licensed, and the apps keep it out of their trees).
 ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring"], optional = true }
