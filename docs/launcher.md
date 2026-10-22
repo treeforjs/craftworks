@@ -55,9 +55,13 @@ downloads are installed for the current user. Existing MSI, distribution-package
 manually unpacked installations are separate from the copies managed by Craftworks.
 
 Craftworks shows its own checking, up-to-date or update-available status beside the update
-controls. **Download Craftworks update** opens the newer release's download page. Close the
-launcher and run that version's setup as above, then reopen Craftworks. A failed launcher
-update check has its own retry action and leaves the app library available.
+controls. In a copy installed by its Windows setup or Linux setup script, **Update Craftworks**
+downloads the newer setup and checks it against the release's signed checksum list. It then
+installs when you close Craftworks, or right away with **Restart to update**: Windows runs the
+setup silently once Craftworks has exited, and Linux runs the setup script, which keeps a backup
+of the previous launcher. Portable, tarball-only and source copies show **Download Craftworks
+update**, which opens the newer release's download page. A failed launcher update check has its
+own retry action and leaves the app library available.
 
 ### Retire an old ZIP or app folder
 
@@ -100,8 +104,7 @@ recognize the launcher's managed copies. A hub install removes the portable mark
 first launch so PdfCraft and PhotoCraft keep their settings in stable per-user folders across
 updates. It does not import the settings from an existing portable copy.
 
-Update Craftworks itself by downloading its newer release and running the installer again.
-Automatic replacement of the launcher is not part of this first version. Uninstalling the
+An installed Craftworks updates itself from its own signed releases (see above). Uninstalling the
 launcher retains managed apps and user preferences; remove unwanted apps from Craftworks
 first.
 

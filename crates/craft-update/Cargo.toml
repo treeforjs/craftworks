@@ -1,7 +1,7 @@
 [package]
 name = "craft-update"
 description = "In-app updates for the craft apps: check GitHub Releases, download, verify a signed checksum list, install and restart"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"

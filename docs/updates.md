@@ -173,8 +173,8 @@ GitHub documents [publishing a draft release](https://docs.github.com/en/reposit
    preview. For future releases, retain the signing key and increment the application version.
 
 Published release assets must not be replaced. Rebuild with a new version if anything needs
-changing. Craftworks updates its managed apps; the launcher itself is updated by downloading
-and running its next installer. See [launcher.md](launcher.md) for packaging and supported assets.
+changing. Craftworks updates its managed apps, and an installed launcher runs its own next
+signed setup (`-setup.exe` or `-setup.sh`), so keep those asset names. See [launcher.md](launcher.md) for packaging and supported assets.
 
 ## Optional operating-system code signing
 

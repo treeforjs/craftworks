@@ -4,4 +4,4 @@
 mod launcher;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use launcher::Launcher;
+pub use launcher::{Launcher, PendingUpdate};

@@ -17,6 +17,7 @@ fn main() -> Result<(), String> {
         ("launcher-update-light.png", craftworks::Launcher::preview_launcher_update(Appearance::Light), egui::vec2(920.0, 1120.0)),
         ("launcher-update-dark.png", craftworks::Launcher::preview_launcher_update(Appearance::Dark), egui::vec2(920.0, 1120.0)),
         ("launcher-update-compact.png", craftworks::Launcher::preview_launcher_update(Appearance::Light), egui::vec2(360.0, 800.0)),
+        ("launcher-ready.png", craftworks::Launcher::preview_launcher_ready(Appearance::Light), egui::vec2(920.0, 1120.0)),
         ("launcher-checking.png", craftworks::Launcher::preview_launcher_checking(Appearance::Dark), egui::vec2(920.0, 1120.0)),
         ("launcher-offline.png", craftworks::Launcher::preview_offline(Appearance::Light), egui::vec2(920.0, 1200.0)),
         ("launcher-no-key.png", craftworks::Launcher::preview_without_key(Appearance::Dark), egui::vec2(920.0, 1240.0)),
