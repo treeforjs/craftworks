@@ -11,7 +11,7 @@ use craft_manager::legacy::{self, LegacyInstall, LegacyMethod, Removal};
 use craft_manager::self_removal::{Options as UninstallOptions, Plan as UninstallPlan};
 use craft_manager::{APPS, App, Availability, Installed, Manager};
 use craft_ui::{Appearance, Palette, PaletteItem, Theme, Variant};
-use craft_update::{AppInfo, Error, GitHub, Release, Source, State, Updater, Version};
+use craft_update::{AppInfo, Applied, Error, GitHub, InstallKind, Prepared, Release, Source, State, Updater, Version};
 use egui::{RichText, Stroke, vec2};
 
 const RELEASES: &str = "https://github.com/treeforjs/craftworks/releases";
@@ -158,6 +158,9 @@ enum Job {
 enum Action {
     Check,
     CheckLauncher,
+    UpdateLauncher,
+    CancelLauncherUpdate,
+    RestartLauncher,
     Install(App),
     InstallAll,
     UpdateAll,
@@ -168,6 +171,29 @@ enum Action {
     Cancel,
 }
 
+/// A verified Craftworks update for the executable to install once the window has closed.
+pub struct PendingUpdate {
+    prepared: Prepared,
+    restart: bool,
+}
+
+impl PendingUpdate {
+    /// Installs it; after "Restart to update" the new version opens once it is installed.
+    pub fn apply(self) -> Result<Applied, Error> {
+        self.prepared.apply(self.restart)
+    }
+}
+
+/// How this launcher updates itself. Only the installed copy (the one Settings can uninstall)
+/// runs its next setup; source, build and portable copies link to the release page instead.
+fn launcher_install_kind() -> InstallKind {
+    match UninstallPlan::detect(None) {
+        Ok(_) if cfg!(windows) => InstallKind::WindowsSetup,
+        Ok(_) => InstallKind::LinuxSetup,
+        Err(_) => InstallKind::Other,
+    }
+}
+
 /// The desktop app. Filesystem and network work run on workers; rendering stays responsive.
 pub struct Launcher {
     theme: Theme,
@@ -176,6 +202,9 @@ pub struct Launcher {
     uninstall_launcher: Option<UninstallLauncher>,
     removing_launcher: bool,
     uninstall_on_exit: Option<Sender<UninstallPlan>>,
+    update_on_exit: Option<Sender<PendingUpdate>>,
+    update_handed_off: bool,
+    launcher_downloaded: bool,
     apps: Vec<AppView>,
     manager: Option<Manager>,
     initializing: bool,
@@ -216,6 +245,13 @@ impl Launcher {
         app
     }
 
+    /// Send a verified Craftworks update to the executable, which installs it after the window
+    /// closes (and reopens Craftworks after "Restart to update").
+    pub fn with_update_on_exit(mut self, on_exit: Sender<PendingUpdate>) -> Self {
+        self.update_on_exit = Some(on_exit);
+        self
+    }
+
     fn empty() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -225,6 +261,9 @@ impl Launcher {
             uninstall_launcher: None,
             removing_launcher: false,
             uninstall_on_exit: None,
+            update_on_exit: None,
+            update_handed_off: false,
+            launcher_downloaded: false,
             apps: APPS.into_iter().map(AppView::new).collect(),
             manager: None,
             initializing: false,
@@ -287,7 +326,8 @@ impl Launcher {
                 prereleases: false,
             },
             source,
-        );
+        )
+        .with_install_kind(launcher_install_kind());
         let repaint = ctx.clone();
         updater.on_change(move || repaint.request_repaint());
         updater.check();
@@ -637,6 +677,12 @@ impl Launcher {
         }
         if let Some(updater) = &mut self.updater {
             updater.poll();
+            // A verified update installs when Craftworks closes, even without a restart.
+            if !self.update_handed_off
+                && let (Some(prepared), Some(on_exit)) = (updater.prepared(), &self.update_on_exit)
+            {
+                self.update_handed_off = on_exit.send(PendingUpdate { prepared: prepared.clone(), restart: false }).is_ok();
+            }
         }
         if self.last_child_poll.elapsed() >= Duration::from_millis(500) {
             self.last_child_poll = Instant::now();
@@ -670,6 +716,7 @@ impl Launcher {
         }
         if self.initializing
             || self.checking
+            || self.updater.as_ref().is_some_and(Updater::busy)
             || self.active.is_some()
             || self.apps.iter().any(|view| view.running() || view.previous_scanning)
             || self.locate_previous.as_ref().is_some_and(|locate| locate.inspecting)
@@ -717,7 +764,28 @@ impl Launcher {
         }
         match action {
             Action::Check => self.check(ctx),
-            Action::CheckLauncher => self.check_launcher(ctx),
+            Action::CheckLauncher => {
+                self.launcher_downloaded = false;
+                self.check_launcher(ctx);
+            }
+            Action::UpdateLauncher => {
+                if let Some(updater) = &mut self.updater {
+                    self.launcher_downloaded = true;
+                    updater.download();
+                }
+            }
+            Action::CancelLauncherUpdate => {
+                if let Some(updater) = &mut self.updater {
+                    updater.cancel();
+                }
+            }
+            Action::RestartLauncher => {
+                if let (Some(prepared), Some(on_exit)) = (self.updater.as_ref().and_then(Updater::prepared), &self.update_on_exit)
+                    && on_exit.send(PendingUpdate { prepared: prepared.clone(), restart: true }).is_ok()
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
             Action::Install(app) => {
                 if self.active.is_none()
                     && self.queue.is_empty()
@@ -893,9 +961,22 @@ impl Launcher {
                     notes: String::new(),
                     assets: Vec::new(),
                 },
-                kind: craft_update::InstallKind::Other,
-                install: Err("Download the installer from the release page.".into()),
+                kind: InstallKind::LinuxSetup,
+                install: Ok(craft_update::Asset {
+                    name: "craftworks-9.9.9-linux-x86_64-setup.sh".into(),
+                    url: format!("{RELEASES}/download/craftworks-v9.9.9/craftworks-9.9.9-linux-x86_64-setup.sh"),
+                    size: 4 << 20,
+                }),
             }));
+        }
+        app
+    }
+
+    /// A network-free fixture showing a downloaded Craftworks update waiting for a restart.
+    pub fn preview_launcher_ready(appearance: Appearance) -> Self {
+        let mut app = Self::preview_launcher_update(appearance);
+        if let Some(State::Available(offer)) = app.preview_update.take() {
+            app.preview_update = Some(State::Ready(offer));
         }
         app
     }
@@ -1112,21 +1193,55 @@ impl Launcher {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("Craftworks {}", env!("CARGO_PKG_VERSION"))).small().color(t.text_muted));
             match self.launcher_update_state() {
-                Some(State::Checking | State::Downloading { .. }) => {
+                Some(State::Checking) => {
                     ui.spinner();
                     ui.label(RichText::new("Checking Craftworks updates…").small().color(t.text_muted));
+                }
+                Some(State::Downloading { offer, received, total }) => {
+                    ui.spinner();
+                    let percent = if *total > 0 { format!(" {}%", received.saturating_mul(100) / total) } else { String::new() };
+                    ui.label(RichText::new(format!("Downloading Craftworks {}…{percent}", offer.release.version)).small().color(t.text_muted));
+                    if craft_ui::button(ui, "Cancel Craftworks update", Variant::Ghost).clicked() {
+                        *action = Some(Action::CancelLauncherUpdate);
+                    }
                 }
                 Some(State::UpToDate) => {
                     ui.label(RichText::new("Up to date").small().color(t.success));
                 }
-                Some(State::Available(offer) | State::Ready(offer)) => {
+                Some(State::Available(offer)) => {
                     ui.label(RichText::new(format!("Version {} available", offer.release.version)).small().color(t.success));
-                    ui.hyperlink_to("Download Craftworks update", &offer.release.page);
+                    match &offer.install {
+                        Ok(_) => {
+                            if craft_ui::button(ui, "Update Craftworks", Variant::Secondary).clicked() {
+                                *action = Some(Action::UpdateLauncher);
+                            }
+                        }
+                        Err(why) => {
+                            ui.hyperlink_to("Download Craftworks update", &offer.release.page).on_hover_text(why);
+                        }
+                    }
+                }
+                Some(State::Ready(offer)) => {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Craftworks {} is ready. It installs when you close Craftworks.", offer.release.version))
+                                .small()
+                                .color(t.success),
+                        )
+                        .wrap(),
+                    );
+                    if craft_ui::button(ui, "Restart to update", Variant::Secondary).clicked() {
+                        *action = Some(Action::RestartLauncher);
+                    }
                 }
                 Some(State::Failed(error)) => {
-                    ui.add(egui::Label::new(RichText::new("Couldn't check Craftworks updates.").small().color(t.danger)).wrap())
-                        .on_hover_text(error.to_string());
-                    if craft_ui::button(ui, "Retry Craftworks check", Variant::Ghost).clicked() {
+                    let (message, retry) = match error {
+                        Error::Cancelled => ("Craftworks update cancelled.", "Check Craftworks again"),
+                        _ if self.launcher_downloaded => ("Couldn't update Craftworks.", "Check Craftworks again"),
+                        _ => ("Couldn't check Craftworks updates.", "Retry Craftworks check"),
+                    };
+                    ui.add(egui::Label::new(RichText::new(message).small().color(t.danger)).wrap()).on_hover_text(error.to_string());
+                    if craft_ui::button(ui, retry, Variant::Ghost).clicked() {
                         *action = Some(Action::CheckLauncher);
                     }
                 }
@@ -2016,6 +2131,7 @@ mod tests {
                 Launcher::preview_without_key(Appearance::Light),
                 Launcher::preview_previous(Appearance::Dark),
                 Launcher::preview_launcher_update(Appearance::Light),
+                Launcher::preview_launcher_ready(Appearance::Dark),
                 Launcher::preview_launcher_checking(Appearance::Dark),
                 Launcher::preview_uninstall(Appearance::Light),
             ] {

@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "craft-update"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "craftworks"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "craft-manager",
  "craft-ui",

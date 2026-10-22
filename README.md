@@ -17,8 +17,10 @@ cargo run -p craftworks
 
 Downloadable Craftworks builds are produced by
 [`launcher-release.yml`](.github/workflows/launcher-release.yml): a Windows installer and
-portable zip, and a bundled Linux setup script or tarball with a user installer. Update the launcher itself by running
-the newer installer. Check for updates also checks Craftworks and links to its newer installer.
+portable zip, and a bundled Linux setup script or tarball with a user installer. Check for updates
+also checks Craftworks: an installed copy downloads and verifies its next setup, then installs it
+when you close Craftworks or choose **Restart to update**. Portable and source copies link to the
+newer release instead.
 
 To remove it, open **Settings → Uninstall Craftworks…**, review the exact locations, and confirm.
 Managed apps and their settings/data are separate, optional cleanup choices. Presets, installed

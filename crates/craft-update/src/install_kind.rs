@@ -76,10 +76,17 @@ impl Arch {
 pub enum InstallKind {
     /// The Windows installer (`.msi`, per machine): updated by running the new `.msi`.
     WindowsMsi,
+    /// A per-user Windows setup program (`-setup.exe`): updated by running the new setup
+    /// silently (`/S`) after the app quits. Never detected: an app installed this way says so
+    /// with `Updater::with_install_kind`.
+    WindowsSetup,
     /// The Windows portable zip (a `portable.txt` beside the program): not updated in place.
     WindowsPortable,
     /// A Linux AppImage at this path: updated by replacing the file.
     AppImage(PathBuf),
+    /// A per-user Linux installation made by a `-setup.sh` script: updated by running the new
+    /// script. Never detected, like [`InstallKind::WindowsSetup`].
+    LinuxSetup,
     /// The Debian/Ubuntu package: updated through the package manager (asks for a password).
     Deb,
     /// The Fedora/openSUSE package: updated through the package manager (asks for a password).
@@ -166,23 +173,30 @@ impl InstallKind {
 
     /// The release asset that updates this copy, or `None` when it can't update itself.
     pub fn asset_name(&self, app: &AppInfo, version: &Version, arch: Arch) -> Option<String> {
-        let (os, ext) = match self {
-            InstallKind::WindowsMsi => (Os::Windows, "msi"),
-            InstallKind::AppImage(_) => (Os::Linux, "AppImage"),
-            InstallKind::Deb => (Os::Linux, "deb"),
-            InstallKind::Rpm => (Os::Linux, "rpm"),
+        let (os, suffix) = match self {
+            InstallKind::WindowsMsi => (Os::Windows, ".msi"),
+            InstallKind::WindowsSetup => (Os::Windows, "-setup.exe"),
+            InstallKind::AppImage(_) => (Os::Linux, ".AppImage"),
+            InstallKind::LinuxSetup => (Os::Linux, "-setup.sh"),
+            InstallKind::Deb => (Os::Linux, ".deb"),
+            InstallKind::Rpm => (Os::Linux, ".rpm"),
             _ => return None,
         };
         let arch = arch.asset_name(os)?;
         let os = if os == Os::Windows { "windows" } else { "linux" };
-        Some(format!("{}-{version}-{os}-{arch}.{ext}", app.id))
+        Some(format!("{}-{version}-{os}-{arch}{suffix}", app.id))
     }
 
     /// Why this copy can't update itself, in words for people; `None` when it can.
     pub fn why_not(&self, app: &AppInfo) -> Option<String> {
         let name = &app.display_name;
         match self {
-            InstallKind::WindowsMsi | InstallKind::AppImage(_) | InstallKind::Deb | InstallKind::Rpm => None,
+            InstallKind::WindowsMsi
+            | InstallKind::WindowsSetup
+            | InstallKind::AppImage(_)
+            | InstallKind::LinuxSetup
+            | InstallKind::Deb
+            | InstallKind::Rpm => None,
             InstallKind::WindowsPortable => Some(format!("This portable copy of {name} doesn't update itself. Download the new portable zip.")),
             InstallKind::Flatpak => Some(format!("{name} installed with Flatpak updates through Flatpak or your software centre.")),
             InstallKind::MacApp => Some(format!("{name} for macOS doesn't update itself yet. Download the new version.")),
@@ -240,6 +254,11 @@ mod tests {
         assert_eq!(name(InstallKind::Deb, Arch::Aarch64).as_deref(), Some("pdfcraft-1.2.0-linux-aarch64.deb"));
         assert_eq!(name(InstallKind::Rpm, Arch::X86_64).as_deref(), Some("pdfcraft-1.2.0-linux-x86_64.rpm"));
         assert_eq!(name(InstallKind::Rpm, Arch::X86), None);
+        assert_eq!(name(InstallKind::WindowsSetup, Arch::X86_64).as_deref(), Some("pdfcraft-1.2.0-windows-x64-setup.exe"));
+        assert_eq!(name(InstallKind::WindowsSetup, Arch::Aarch64).as_deref(), Some("pdfcraft-1.2.0-windows-arm64-setup.exe"));
+        assert_eq!(name(InstallKind::LinuxSetup, Arch::X86_64).as_deref(), Some("pdfcraft-1.2.0-linux-x86_64-setup.sh"));
+        assert_eq!(name(InstallKind::LinuxSetup, Arch::Aarch64).as_deref(), Some("pdfcraft-1.2.0-linux-aarch64-setup.sh"));
+        assert!(InstallKind::WindowsSetup.why_not(&app).is_none() && InstallKind::LinuxSetup.why_not(&app).is_none());
         for k in [InstallKind::WindowsPortable, InstallKind::Flatpak, InstallKind::MacApp, InstallKind::Other] {
             assert_eq!(name(k.clone(), Arch::X86_64), None);
             assert!(k.why_not(&app).is_some());

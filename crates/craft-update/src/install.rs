@@ -199,15 +199,17 @@ impl Prepared {
         let file = verified_file(&self.file, self.download.size, &self.download.digest, &self.kind)?;
         let result = match &self.kind {
             InstallKind::AppImage(target) => self.apply_appimage(target, restart, &file),
-            InstallKind::WindowsMsi => self.apply_msi(restart),
+            InstallKind::WindowsMsi => self.apply_windows(WindowsInstaller::Msi, restart),
+            InstallKind::WindowsSetup => self.apply_windows(WindowsInstaller::Setup, restart),
+            InstallKind::LinuxSetup => self.apply_setup_script(restart),
             InstallKind::Deb | InstallKind::Rpm => self.apply_package(restart),
             other => Err(Error::Unsupported(format!("{other:?} copies don't update themselves"))),
         };
         drop(file);
-        // Taking drops synchronous staging. Only the deferred MSI installer retains it.
+        // Taking drops synchronous staging. Only the deferred Windows installers retain it.
         if result.is_ok()
             && let Some(stage) = directory.take()
-            && self.kind == InstallKind::WindowsMsi
+            && matches!(self.kind, InstallKind::WindowsMsi | InstallKind::WindowsSetup)
         {
             let _ = stage.keep();
         }
@@ -270,9 +272,32 @@ impl Prepared {
         Ok(Applied::Installed)
     }
 
-    fn apply_msi(&self, restart: bool) -> Result<Applied, Error> {
+    fn apply_setup_script(&self, restart: bool) -> Result<Applied, Error> {
+        let bash = find(&["/usr/bin/bash", "/bin/bash"]).ok_or_else(|| Error::Install("installing needs bash, which isn't installed".into()))?;
+        // The setup replaces the program by renaming it, so this copy keeps running until it quits.
+        let output = Command::new(bash)
+            .arg(&self.file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| Error::Install(format!("couldn't start the setup: {e}")))?;
+        if !output.status.success() {
+            let said = String::from_utf8_lossy(&output.stderr);
+            let reason: String = said.lines().map(str::trim).rev().find(|line| !line.is_empty()).unwrap_or("no details").chars().take(300).collect();
+            return Err(Error::Install(format!("the setup failed ({}): {reason}", output.status)));
+        }
+        if restart {
+            let exe = std::env::current_exe().map_err(|e| Error::Install(e.to_string()))?;
+            spawn_detached(Command::new(strip_deleted(&exe)))?;
+        }
+        Ok(Applied::Installed)
+    }
+
+    fn apply_windows(&self, installer: WindowsInstaller, restart: bool) -> Result<Applied, Error> {
         let exe = std::env::current_exe().map_err(|e| Error::Install(e.to_string()))?;
-        let script = msi_script(&self.file, &self.download.digest, self.download.size, std::process::id(), restart.then_some(exe.as_path()));
+        let script =
+            windows_script(&self.file, installer, &self.download.digest, self.download.size, std::process::id(), restart.then_some(exe.as_path()));
         let root = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
@@ -299,16 +324,37 @@ impl Prepared {
     }
 }
 
+/// What the deferred Windows handoff runs once the app has quit.
+#[derive(Clone, Copy)]
+enum WindowsInstaller {
+    /// Windows Installer: `msiexec /i … /passive /norestart`.
+    Msi,
+    /// The per-user setup program itself, silently.
+    Setup,
+}
+
 /// The PowerShell that runs the installer once the app has quit, then reopens the app.
 /// Windows paths can't contain `"`, and `'` is doubled inside PowerShell's single quotes, so
 /// no path can break out of its string.
-fn msi_script(msi: &Path, digest: &[u8; 32], size: u64, pid: u32, reopen: Option<&Path>) -> String {
+fn windows_script(file: &Path, installer: WindowsInstaller, digest: &[u8; 32], size: u64, pid: u32, reopen: Option<&Path>) -> String {
     let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
     let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    // The read-sharing lease stays open while the installer runs, so nothing can replace it.
+    let run = match installer {
+        WindowsInstaller::Msi => format!(
+            "$u=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/msiexec.exe') -ArgumentList '/i \"{}\" /passive /norestart' -Wait -PassThru; if($u.ExitCode -notin @(0,1641,3010)){{throw 'Windows Installer did not complete.'}}; ",
+            quote(file)
+        ),
+        WindowsInstaller::Setup => {
+            format!(
+                "$u=Start-Process -FilePath '{}' -ArgumentList '/S' -Wait -PassThru; if($u.ExitCode -ne 0){{throw 'The setup did not complete.'}}; ",
+                quote(file)
+            )
+        }
+    };
     let mut s = format!(
-        "$ErrorActionPreference='Stop'; $f=$null; try{{$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; if($p -and -not $p.WaitForExit(60000)){{throw 'The app did not exit.'}}; $f=[IO.File]::Open('{}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); if($f.Length -ne {size}){{throw 'The update size changed.'}}; $sha=[Security.Cryptography.SHA256]::Create(); try{{$h=[BitConverter]::ToString($sha.ComputeHash($f)).Replace('-','').ToLowerInvariant()}}finally{{$sha.Dispose()}}; if($h -ne '{hash}'){{throw 'The update checksum changed.'}}; $u=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/msiexec.exe') -ArgumentList '/i \"{}\" /passive /norestart' -Wait -PassThru; if($u.ExitCode -notin @(0,1641,3010)){{throw 'Windows Installer did not complete.'}}; ",
-        quote(msi),
-        quote(msi)
+        "$ErrorActionPreference='Stop'; $f=$null; try{{$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; if($p -and -not $p.WaitForExit(60000)){{throw 'The app did not exit.'}}; $f=[IO.File]::Open('{}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); if($f.Length -ne {size}){{throw 'The update size changed.'}}; $sha=[Security.Cryptography.SHA256]::Create(); try{{$h=[BitConverter]::ToString($sha.ComputeHash($f)).Replace('-','').ToLowerInvariant()}}finally{{$sha.Dispose()}}; if($h -ne '{hash}'){{throw 'The update checksum changed.'}}; {run}",
+        quote(file)
     );
     if let Some(exe) = reopen {
         s.push_str(&format!("Start-Process -FilePath '{}'; ", quote(exe)));
@@ -316,8 +362,8 @@ fn msi_script(msi: &Path, digest: &[u8; 32], size: u64, pid: u32, reopen: Option
     s.push_str("}catch{Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('The update could not be installed. Check for updates and try again.','Craft update') | Out-Null; exit 1}finally{if($f){$f.Dispose()}; ");
     s.push_str(&format!(
         "Remove-Item -LiteralPath '{}' -ErrorAction SilentlyContinue; [IO.Directory]::Delete('{}') }}",
-        quote(msi),
-        quote(msi.parent().unwrap_or_else(|| Path::new("")))
+        quote(file),
+        quote(file.parent().unwrap_or_else(|| Path::new("")))
     ));
     s
 }
@@ -353,8 +399,9 @@ mod tests {
 
     #[test]
     fn the_windows_script_quotes_every_path() {
-        let s = msi_script(
+        let s = windows_script(
             Path::new(r"C:\Users\O'Neil & Co\AppData\Local\PdfCraft\updates\pdfcraft-1.2.0-windows-x64.msi"),
+            WindowsInstaller::Msi,
             &[0xab; 32],
             123,
             456,
@@ -367,7 +414,21 @@ mod tests {
         assert!(s.contains(r"Start-Process -FilePath 'C:\Program Files\PdfCraft\pdfcraft.exe'"), "{s}");
         assert!(s.contains(&"ab".repeat(32)) && s.contains("$f.Length -ne 123") && s.contains("[IO.FileShare]::Read"));
         assert!(s.contains("Get-Process -Id 456") && s.contains("finally") && s.contains("Remove-Item -LiteralPath"));
-        assert!(!msi_script(Path::new("a.msi"), &[0; 32], 1, 1, None).contains("pdfcraft.exe"));
+        assert!(!windows_script(Path::new("a.msi"), WindowsInstaller::Msi, &[0; 32], 1, 1, None).contains("pdfcraft.exe"));
+        let setup = windows_script(
+            Path::new(r"C:\Users\O'Neil\AppData\Local\Craftworks\updates\craftworks-1.2.0-windows-x64-setup.exe"),
+            WindowsInstaller::Setup,
+            &[0xcd; 32],
+            77,
+            88,
+            Some(Path::new(r"C:\Users\O'Neil\AppData\Local\Programs\Craftworks\craftworks.exe")),
+        );
+        assert!(
+            setup.contains(r"Start-Process -FilePath 'C:\Users\O''Neil\AppData\Local\Craftworks\updates\craftworks-1.2.0-windows-x64-setup.exe' -ArgumentList '/S' -Wait"),
+            "{setup}"
+        );
+        assert!(setup.contains("$u.ExitCode -ne 0") && !setup.contains("msiexec") && setup.contains(&"cd".repeat(32)));
+        assert!(setup.contains("Get-Process -Id 88") && setup.contains("$f.Length -ne 77") && setup.contains("[IO.FileShare]::Read"));
         // UTF-16LE then base64: "a" is 61 00.
         assert_eq!(encode_powershell("a"), "YQA=");
     }
@@ -388,6 +449,26 @@ mod tests {
         assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o755);
         // Applying twice finds the download gone and says so.
         assert!(matches!(p.apply(false), Err(Error::Install(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linux_setup_script_runs_and_reports_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("installed");
+        let script = format!("#!/usr/bin/env bash\nprintf new > '{}'\n", marker.display());
+        let p = prepared(dir.path(), InstallKind::LinuxSetup, "pdfcraft-1.2.0-linux-x86_64-setup.sh", script.as_bytes());
+        let stage = p.file.parent().unwrap().to_path_buf();
+        assert_eq!(p.apply(false).unwrap(), Applied::Installed);
+        assert_eq!(std::fs::read(&marker).unwrap(), b"new");
+        // The synchronous setup leaves nothing staged behind, and only runs once.
+        assert!(!stage.exists());
+        assert!(matches!(p.apply(false), Err(Error::Install(_))));
+        let failing = prepared(dir.path(), InstallKind::LinuxSetup, "bad-setup.sh", b"echo 'Craftworks setup: no room' >&2\nexit 3\n");
+        match failing.apply(false) {
+            Err(Error::Install(message)) => assert!(message.contains("no room"), "{message}"),
+            other => panic!("a failed setup was reported as {other:?}"),
+        }
     }
 
     #[test]
@@ -473,23 +554,32 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn the_deferred_msi_script_parses_in_windows_powershell() {
+    fn the_deferred_scripts_parse_in_windows_powershell() {
         let base = tempfile::tempdir().unwrap();
-        let path = base.path().join("script.ps1");
-        std::fs::write(
-            &path,
-            msi_script(Path::new(r"C:\Users\O'Neil & Co\updates\x.msi"), &[0xab; 32], 123, 456, Some(Path::new(r"C:\Program Files\App\app.exe"))),
-        )
-        .unwrap();
-        let system = std::env::var_os("SystemRoot").unwrap();
-        let check = format!(
-            "$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile('{}',[ref]$t,[ref]$e) | Out-Null; if($e.Count){{$e | Out-String | Write-Error; exit 1}}",
-            path.to_string_lossy().replace('\'', "''")
-        );
-        let output = Command::new(PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
-            .args(["-NoProfile", "-NonInteractive", "-Command", &check])
-            .output()
+        for (name, installer) in [("x.msi", WindowsInstaller::Msi), ("x-setup.exe", WindowsInstaller::Setup)] {
+            let path = base.path().join("script.ps1");
+            std::fs::write(
+                &path,
+                windows_script(
+                    &Path::new(r"C:\Users\O'Neil & Co\updates").join(name),
+                    installer,
+                    &[0xab; 32],
+                    123,
+                    456,
+                    Some(Path::new(r"C:\Program Files\App\app.exe")),
+                ),
+            )
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let system = std::env::var_os("SystemRoot").unwrap();
+            let check = format!(
+                "$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile('{}',[ref]$t,[ref]$e) | Out-Null; if($e.Count){{$e | Out-String | Write-Error; exit 1}}",
+                path.to_string_lossy().replace('\'', "''")
+            );
+            let output = Command::new(PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+                .args(["-NoProfile", "-NonInteractive", "-Command", &check])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{name}: {}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 }

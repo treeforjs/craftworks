@@ -7,9 +7,14 @@ when the app quits (or restart into it right away).
 | Installed with | Updates by |
 | --- | --- |
 | Windows installer (`.msi`) | running the new `.msi` after the app quits (`msiexec /passive`), then reopening the app |
+| Windows setup program (`-setup.exe`, per user) | running the new setup silently (`/S`) after the app quits, then reopening the app |
 | AppImage | replacing the AppImage file in place (atomic rename), then reopening it |
+| Linux setup script (`-setup.sh`, per user) | running the new setup script with `bash`, then reopening the app |
 | `.deb` / `.rpm` | the system package manager through `pkexec` (asks for a password) |
 | Windows portable zip, Flatpak, tarball, macOS, source builds | not in place: the app offers the release page |
+
+The two setup kinds are never detected: an app installed by its own setup program or script
+says so with `Updater::with_install_kind(InstallKind::WindowsSetup)` (or `LinuxSetup`).
 
 ## Trust
 
@@ -25,8 +30,9 @@ Each download owns a fresh private staging folder. Starting, failing or cancelli
 download never sweeps that folder. Dropping the final prepared-update owner removes its
 staging. Applying an update rechecks its size and signed checksum; changed payloads and
 changed prepared metadata are refused. AppImage staging stays on the same filesystem for
-atomic replacement. The Windows handoff waits for the app to exit, opens the MSI against
-writes, rechecks the checksum, and removes its own staged file after Windows Installer exits.
+atomic replacement. The Windows handoff waits for the app to exit, opens the MSI or setup
+program against writes, rechecks the checksum, and removes its own staged file after the
+installer exits.
 An interrupted process may leave a private staging folder; a later download leaves it alone.
 
 `Prepared` values come from `Updater::prepared`; they cannot be constructed from arbitrary
