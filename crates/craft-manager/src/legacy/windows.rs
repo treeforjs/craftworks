@@ -1,7 +1,7 @@
 //! Removal of the apps' older, registered Windows Installer packages.
 //!
-//! The earliest and current WiX definitions in each app use the names in `APPS` and
-//! `Learning Machines LLC` as publisher. We never execute registry uninstall strings.
+//! Current and earlier WiX packages use the names in `APPS`. Keep the old publisher
+//! as compatibility data. We never execute registry uninstall strings.
 
 use std::ffi::OsString;
 use std::io;
@@ -17,7 +17,9 @@ use crate::App;
 
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 const WINDOWS_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
-const PUBLISHER: &str = "Learning Machines LLC";
+const PUBLISHER: &str = "Craft contributors";
+// Compatibility with already installed MSI packages; never displayed as current branding.
+const LEGACY_PUBLISHER: &str = "Learning Machines LLC";
 const REGISTRY_VIEWS: [u32; 2] = [KEY_WOW64_64KEY, KEY_WOW64_32KEY];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,7 +134,7 @@ fn read_entry(parent: &RegKey, name: &str, view: u32) -> Result<Option<RegistryE
 fn identify(app: App, hive: Hive, view: u32, key: String, entry: RegistryEntry) -> Option<LegacyInstall> {
     if !REGISTRY_VIEWS.contains(&view)
         || entry.windows_installer != 1
-        || !entry.publisher.eq_ignore_ascii_case(PUBLISHER)
+        || ![PUBLISHER, LEGACY_PUBLISHER].iter().any(|publisher| entry.publisher.eq_ignore_ascii_case(publisher))
         || !matches_name(app, &entry)
         || !valid_product_code(&key)
     {

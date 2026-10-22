@@ -78,7 +78,11 @@ fn read(raw: RawRelease, app: &AppInfo) -> Option<Release> {
     if raw.draft || raw.prerelease && !app.prereleases {
         return None;
     }
-    let version = Version::parse(&raw.tag_name)?;
+    // A shared repository can publish several crates alongside its app. Only the app's
+    // own namespace is a release candidate; keep the original tag for URLs and downloads.
+    let prefix = format!("{}-", app.id);
+    let version_tag = raw.tag_name.strip_prefix(&prefix).filter(|tag| tag.starts_with('v')).unwrap_or(&raw.tag_name);
+    let version = Version::parse(version_tag)?;
     if version.is_prerelease() && !app.prereleases {
         return None;
     }
@@ -110,6 +114,7 @@ fn read(raw: RawRelease, app: &AppInfo) -> Option<Release> {
 
 /// The newest release in GitHub's answer to `GET /repos/{repo}/releases`, skipping drafts and,
 /// unless the app asks for them, pre-releases. `Ok(None)` when there is none.
+/// Accepts plain version tags and `<app.id>-v<version>`; other crate namespaces are skipped.
 pub fn newest(json: &str, app: &AppInfo) -> Result<Option<Release>, Error> {
     let raw: Vec<RawRelease> = serde_json::from_str(json).map_err(|e| Error::Invalid(format!("not a release list: {e}")))?;
     Ok(raw.into_iter().filter_map(|r| read(r, app)).max_by(|a, b| a.version.cmp(&b.version)))
@@ -174,5 +179,85 @@ pub(crate) mod tests {
         assert_eq!(names, ["pdfcraft-0.6.0-windows-x64.msi"]);
         let page = r#"[{"tag_name":"v1.0.0","html_url":"https://evil.example/x"}]"#;
         assert_eq!(newest(page, &app()).unwrap().unwrap().page, "https://github.com/treeforjs/pdfcraft/releases");
+    }
+
+    fn launcher() -> AppInfo {
+        AppInfo {
+            id: "craftworks".into(),
+            display_name: "Craftworks".into(),
+            repo: "treeforjs/craftworks".into(),
+            current: "0.1.0".into(),
+            public_key: None,
+            prereleases: false,
+        }
+    }
+
+    fn launcher_release(tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "html_url": format!("https://github.com/treeforjs/craftworks/releases/tag/{tag}"),
+            "assets": [],
+        })
+    }
+
+    #[test]
+    fn namespaced_app_releases_skip_shared_crates_and_foreign_apps() {
+        let mut draft = launcher_release("craftworks-v0.1.3");
+        draft["draft"] = true.into();
+        let json = serde_json::json!([
+            launcher_release("craft-ui-v0.2.0"),
+            launcher_release("craft-update-v0.3.0"),
+            launcher_release("pdfcraft-v9.0.0"),
+            launcher_release("release-craftworks-v9.0.0"),
+            launcher_release("craftworks-vv9.0.0"),
+            launcher_release("craftworks-v0.1.2-rc.1"),
+            draft,
+            launcher_release("craftworks-v0.1.1"),
+            launcher_release("v0.1.0"),
+        ]);
+        let release = newest(&json.to_string(), &launcher()).unwrap().unwrap();
+        assert_eq!(release.version, Version::parse("0.1.1").unwrap());
+        assert_eq!(release.tag, "craftworks-v0.1.1");
+        assert_eq!(release.page, "https://github.com/treeforjs/craftworks/releases/tag/craftworks-v0.1.1");
+    }
+
+    #[test]
+    fn namespaced_releases_keep_the_original_tag_for_asset_validation() {
+        let mut release = launcher_release("craftworks-v0.1.1");
+        release["assets"] = serde_json::json!([
+            {
+                "name": "craftworks-0.1.1-windows-x64-setup.exe",
+                "size": 10,
+                "browser_download_url": "https://github.com/treeforjs/craftworks/releases/download/craftworks-v0.1.1/craftworks-0.1.1-windows-x64-setup.exe",
+            },
+            {
+                "name": "wrong-tag.exe",
+                "size": 10,
+                "browser_download_url": "https://github.com/treeforjs/craftworks/releases/download/v0.1.1/wrong-tag.exe",
+            },
+            {
+                "name": "foreign-repo.exe",
+                "size": 10,
+                "browser_download_url": "https://github.com/treeforjs/pdfcraft/releases/download/craftworks-v0.1.1/foreign-repo.exe",
+            },
+        ]);
+        let release = newest(&serde_json::json!([release]).to_string(), &launcher()).unwrap().unwrap();
+        assert_eq!(release.assets.len(), 1);
+        let asset = release.assets.first().unwrap();
+        assert_eq!(asset.name, "craftworks-0.1.1-windows-x64-setup.exe");
+        assert!(asset.url.contains("/download/craftworks-v0.1.1/"));
+    }
+
+    #[test]
+    fn plain_and_leading_v_app_tags_still_work() {
+        for tag in ["0.1.1", "v0.1.1", "craftworks-v0.1.1"] {
+            let json = serde_json::json!([launcher_release(tag)]);
+            let release = newest(&json.to_string(), &launcher()).unwrap().unwrap();
+            assert_eq!(release.version, Version::parse("0.1.1").unwrap());
+        }
+        for tag in ["craft-ui-v0.2.0", "pdfcraft-v0.2.0", "release-v0.2.0"] {
+            let json = serde_json::json!([launcher_release(tag)]);
+            assert!(newest(&json.to_string(), &launcher()).unwrap().is_none(), "{tag}");
+        }
     }
 }

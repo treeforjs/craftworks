@@ -191,3 +191,46 @@ fn a_network_failure_is_reported() {
     settle(&mut u);
     assert!(matches!(u.state(), State::Failed(Error::Network(_))), "{:?}", u.state());
 }
+
+#[test]
+fn independent_updaters_keep_their_own_ready_downloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("PdfCraft.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let source = github(b"new version", b"new version", &key());
+    let mut first = Updater::new(app(), source.clone()).with_install_kind(InstallKind::AppImage(target.clone()));
+    let mut second = Updater::new(app(), source).with_install_kind(InstallKind::AppImage(target));
+    first.check();
+    second.check();
+    settle(&mut first);
+    settle(&mut second);
+    first.download();
+    second.download();
+    settle(&mut first);
+    settle(&mut second);
+    let first_path = first.prepared().unwrap().file.clone();
+    let second_path = second.prepared().unwrap().file.clone();
+    assert_ne!(first_path.parent(), second_path.parent());
+    assert_eq!(std::fs::read(&first_path).unwrap(), b"new version");
+    assert_eq!(std::fs::read(&second_path).unwrap(), b"new version");
+    drop(second);
+    assert!(!second_path.parent().unwrap().exists());
+    assert_eq!(std::fs::read(&first_path).unwrap(), b"new version");
+    first.apply(false).unwrap();
+    assert!(!first_path.parent().unwrap().exists());
+}
+
+#[test]
+fn changing_a_ready_download_never_replaces_the_running_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut updater, target) = appimage_updater(dir.path(), github(b"new version", b"new version", &key()), app());
+    updater.check();
+    settle(&mut updater);
+    updater.download();
+    settle(&mut updater);
+    let path = updater.prepared().unwrap().file.clone();
+    std::fs::write(&path, b"bad version").unwrap();
+    assert!(matches!(updater.apply(false), Err(Error::Verify(_))));
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+    assert!(!path.parent().unwrap().exists(), "a failed application drops only its own staging");
+}

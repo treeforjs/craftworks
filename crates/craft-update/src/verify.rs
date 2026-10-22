@@ -8,7 +8,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use crate::Error;
@@ -29,7 +29,12 @@ pub fn decode_public_key(b64: &str) -> Result<[u8; 32], Error> {
         44 if bytes.starts_with(&[0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]) => bytes.get(12..).unwrap_or_default(),
         n => return Err(Error::Verify(format!("the update key has {n} bytes, not 32"))),
     };
-    raw.try_into().map_err(|_| Error::Verify("the update key has the wrong length".into()))
+    let raw: [u8; 32] = raw.try_into().map_err(|_| Error::Verify("the update key has the wrong length".into()))?;
+    let key = VerifyingKey::from_bytes(&raw).map_err(|_| Error::Verify("the update key isn't a valid Ed25519 key".into()))?;
+    if key.is_weak() {
+        return Err(Error::Verify("the update key is a weak Ed25519 key".into()));
+    }
+    Ok(raw)
 }
 
 /// A verified checksum list: file name to SHA-256.
@@ -44,9 +49,7 @@ impl Sums {
         let key = VerifyingKey::from_bytes(key).map_err(|_| Error::Verify("the update key isn't a valid Ed25519 key".into()))?;
         let sig = STANDARD.decode(signature.trim()).map_err(|_| Error::Verify("the signature isn't base64".into()))?;
         let sig: [u8; 64] = sig.as_slice().try_into().map_err(|_| Error::Verify("the signature has the wrong length".into()))?;
-        key.verify_strict(list, &Signature::from_bytes(&sig))
-            .or_else(|_| key.verify(list, &Signature::from_bytes(&sig)))
-            .map_err(|_| Error::Verify("the checksum list's signature doesn't match".into()))?;
+        key.verify_strict(list, &Signature::from_bytes(&sig)).map_err(|_| Error::Verify("the checksum list's signature doesn't match".into()))?;
         let text = std::str::from_utf8(list).map_err(|_| Error::Verify("the checksum list isn't text".into()))?;
         Ok(Sums::parse(text))
     }
@@ -153,6 +156,18 @@ mod tests {
         for bad_key in ["", "xyz", &STANDARD.encode([1u8; 31]), &STANDARD.encode([1u8; 44])] {
             assert!(decode_public_key(bad_key).is_err(), "{bad_key}");
         }
+    }
+
+    #[test]
+    fn weak_public_keys_cannot_authorize_an_unsigned_manifest() {
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let mut forged_signature = [0u8; 64];
+        forged_signature[0] = 1;
+        let signature = STANDARD.encode(forged_signature);
+        assert!(Sums::verified(OPENSSL_SUMS, &signature, &identity).is_err());
+        assert!(decode_public_key(&STANDARD.encode(identity)).is_err());
+        assert!(decode_public_key(&STANDARD.encode([0u8; 32])).is_err());
     }
 
     #[test]

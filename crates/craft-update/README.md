@@ -21,6 +21,17 @@ links inside the app's own repository's release are followed, only versions newe
 running one are offered, and because the version is part of each signed file name, an old
 signed release can't be replayed as a new one.
 
+Each download owns a fresh private staging folder. Starting, failing or cancelling another
+download never sweeps that folder. Dropping the final prepared-update owner removes its
+staging. Applying an update rechecks its size and signed checksum; changed payloads and
+changed prepared metadata are refused. AppImage staging stays on the same filesystem for
+atomic replacement. The Windows handoff waits for the app to exit, opens the MSI against
+writes, rechecks the checksum, and removes its own staged file after Windows Installer exits.
+An interrupted process may leave a private staging folder; a later download leaves it alone.
+
+`Prepared` values come from `Updater::prepared`; they cannot be constructed from arbitrary
+paths. Clones share staging ownership and only one successful application is allowed.
+
 An app built without a public key (or a release without a signature) still says a new version
 exists and links to its page; it just never installs anything itself.
 

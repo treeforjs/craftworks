@@ -27,12 +27,16 @@ fn recognizes_each_audited_package_in_all_hives_and_views() {
     for app in APPS {
         for hive in [Hive::CurrentUser, Hive::LocalMachine] {
             for view in REGISTRY_VIEWS {
-                let detected = identify(app, hive, view, PRODUCT.into(), entry(app)).expect("MSI");
-                assert_eq!(detected.app, app);
-                assert_eq!(detected.version.as_deref(), Some("0.1.0"));
-                assert_eq!(detected.method, LegacyMethod::WindowsMsi);
-                assert_eq!(detected.location, Some(PathBuf::from(format!(r"C:\Program Files\{}", app.name))));
-                assert!(detected.description.contains(hive.label()));
+                for publisher in [PUBLISHER, LEGACY_PUBLISHER] {
+                    let mut record = entry(app);
+                    record.publisher = publisher.into();
+                    let detected = identify(app, hive, view, PRODUCT.into(), record).expect("MSI");
+                    assert_eq!(detected.app, app);
+                    assert_eq!(detected.version.as_deref(), Some("0.1.0"));
+                    assert_eq!(detected.method, LegacyMethod::WindowsMsi);
+                    assert_eq!(detected.location, Some(PathBuf::from(format!(r"C:\Program Files\{}", app.name))));
+                    assert!(detected.description.contains(hive.label()));
+                }
             }
         }
     }

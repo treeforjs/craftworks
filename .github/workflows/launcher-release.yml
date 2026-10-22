@@ -2,6 +2,7 @@ name: Craftworks release
 
 on:
   push:
+    branches: [release]
     tags: ["craftworks-v*"]
   workflow_dispatch:
 
@@ -9,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: craftworks-release-${{ github.ref }}
+  group: craftworks-release
   cancel-in-progress: false
 
 env:
@@ -51,8 +52,21 @@ jobs:
                   raise SystemExit(f"::error::Set repository variable {name}, or the shared CRAFT_UPDATE_PUBLIC_KEY, to a base64 Ed25519 public key. See docs/launcher.md.")
           PY
 
-  windows:
+  signing:
+    if: github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/tags/craftworks-v')
     needs: prepare
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the private and public signing keys
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: python3 packaging/signing/check-key.py
+
+  windows:
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.signing.result == 'success' || needs.signing.result == 'skipped') }}
+    needs: [prepare, signing]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -76,15 +90,41 @@ jobs:
       - name: Build the current-user installer and portable zip
         shell: pwsh
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }} -MakeNsis "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
+      - name: Check installed Windows setup and removal
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./packaging/windows/test-install.ps1 -Arch ${{ matrix.arch }} -Version $env:VERSION
+      - name: Fetch authenticated public release feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: python packaging/prepare-release-feeds.py
+      - name: Verify complete signed app installations
+        timeout-minutes: 10
+        env:
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: |
+          cargo test --locked -p craft-update --test published_launcher -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Craftworks release discovery failed.' }
+          cargo test --locked -p craft-manager --test published_installs -- --ignored --nocapture
       - name: Check the portable binary
         shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $archive = Get-Item dist/release/*-portable.zip
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath target/portable-smoke
           $binary = Get-ChildItem target/portable-smoke -Filter craftworks.exe -Recurse | Select-Object -First 1
           if (-not $binary) { throw 'Portable archive has no Craftworks binary.' }
-          & $binary.FullName --version
-          if ($LASTEXITCODE -ne 0) { throw 'Portable binary smoke check failed.' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'craftworks-version.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'craftworks-version-error.txt'
+          $process = Start-Process -FilePath $binary.FullName -ArgumentList '--version' -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($process.ExitCode -ne 0) { throw "Portable binary smoke check failed: $($process.ExitCode)." }
+          $reported = (Get-Content -LiteralPath $stdout -Raw).Trim()
+          if ($reported -ne "Craftworks $env:VERSION") { throw 'Portable binary reported an unexpected version.' }
+          Write-Output $reported
       - uses: actions/upload-artifact@v4
         with:
           name: craftworks-windows-${{ matrix.arch }}
@@ -92,7 +132,8 @@ jobs:
           if-no-files-found: error
 
   linux:
-    needs: prepare
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.signing.result == 'success' || needs.signing.result == 'skipped') }}
+    needs: [prepare, signing]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -113,6 +154,31 @@ jobs:
           key: craftworks-linux-${{ matrix.arch }}
       - name: Build and package
         run: bash packaging/linux/package.sh
+      - name: Install Wayland window-check tools
+        if: matrix.arch == 'x86_64'
+        run: sudo apt-get install -y --no-install-recommends weston xvfb scrot libegl1-mesa libgl1-mesa-dri fonts-cantarell
+      - name: Check the native Wayland window frame
+        if: matrix.arch == 'x86_64'
+        timeout-minutes: 3
+        run: bash packaging/linux/check-window-frame.sh target/release/craftworks target/window-frame
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.arch == 'x86_64'
+        with:
+          name: window-frame-linux-x86_64
+          path: target/window-frame/
+          if-no-files-found: warn
+      - name: Fetch authenticated public release feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: python3 packaging/prepare-release-feeds.py
+      - name: Verify complete signed app installations
+        timeout-minutes: 10
+        env:
+          CRAFT_RELEASE_FEEDS: ${{ runner.temp }}/craftworks-release-feeds
+        run: |
+          cargo test --locked -p craft-update --test published_launcher -- --ignored --nocapture
+          cargo test --locked -p craft-manager --test published_installs -- --ignored --nocapture
       - name: Check user installation and removal
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -120,10 +186,24 @@ jobs:
           target/release/craftworks --version
           mkdir -p target/install-smoke
           tar -xzf "dist/release/craftworks-$VERSION-linux-${{ matrix.arch }}.tar.gz" -C target/install-smoke
+          cmp THIRD-PARTY-NOTICES.txt "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/THIRD-PARTY-NOTICES.txt"
           export HOME="$RUNNER_TEMP/craftworks-user"
           export XDG_DATA_HOME="$HOME/.local/share"
           bash "target/install-smoke/craftworks-$VERSION-linux-${{ matrix.arch }}/install.sh"
+          cmp THIRD-PARTY-NOTICES.txt "$XDG_DATA_HOME/craftworks-launcher/THIRD-PARTY-NOTICES.txt"
           desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
+          "$HOME/.local/bin/craftworks" --version
+          bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
+          test ! -e "$HOME/.local/bin/craftworks"
+          setup="dist/release/craftworks-$VERSION-linux-${{ matrix.arch }}-setup.sh"
+          bash "$setup" --dry-run
+          test ! -e "$HOME/.local/bin/craftworks"
+          bash "$setup"
+          cmp THIRD-PARTY-NOTICES.txt "$XDG_DATA_HOME/craftworks-launcher/THIRD-PARTY-NOTICES.txt"
+          desktop-file-validate "$XDG_DATA_HOME/applications/io.github.treeforjs.craftworks.desktop"
+          "$HOME/.local/bin/craftworks" --version
+          bash "$setup"
+          find "$XDG_DATA_HOME/craftworks-launcher-backups" -path '*/launcher/craftworks' -type f -print -quit | grep -q .
           "$HOME/.local/bin/craftworks" --version
           bash "$XDG_DATA_HOME/craftworks-launcher/uninstall.sh"
           test ! -e "$HOME/.local/bin/craftworks"
@@ -134,8 +214,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/craftworks-v')
-    needs: [prepare, windows, linux]
+    if: ${{ !cancelled() && needs.signing.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' }}
+    needs: [prepare, signing, windows, linux]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -145,6 +225,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: craftworks-*
@@ -163,6 +244,23 @@ jobs:
           trap 'rm -f -- "$key"' EXIT
           umask 077
           printf '%s\n' "$UPDATE_SIGNING_KEY" >"$key"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          version = os.environ["VERSION"]
+          expected = {
+              f"craftworks-{version}-windows-{arch}-{suffix}"
+              for arch in ("x64", "arm64")
+              for suffix in ("setup.exe", "portable.zip")
+          } | {
+              f"craftworks-{version}-linux-{arch}{suffix}"
+              for arch in ("x86_64", "aarch64")
+              for suffix in (".tar.gz", "-setup.sh")
+          }
+          actual = {path.name for path in Path(".").iterdir() if path.is_file()}
+          if actual != expected or any(Path(name).stat().st_size == 0 for name in expected):
+              raise SystemExit("::error::Release artifacts are missing, empty or unexpected.")
+          PY
           expected="${CRAFTWORKS_UPDATE_PUBLIC_KEY:-$CRAFT_UPDATE_PUBLIC_KEY}"
           actual="$(openssl pkey -in "$key" -pubout -outform DER | base64 -w0)"
           # The embedded key may be raw (32 bytes) or SubjectPublicKeyInfo (44 bytes).
@@ -178,6 +276,10 @@ jobs:
           sha256sum -- * >SHA256SUMS.txt
           openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS.txt | base64 -w0 >SHA256SUMS.txt.sig
           test -s SHA256SUMS.txt.sig
+          base64 -d SHA256SUMS.txt.sig >"$RUNNER_TEMP/craftworks-signature.bin"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/craftworks-public.pem"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/craftworks-public.pem" -rawin \
+            -in SHA256SUMS.txt -sigfile "$RUNNER_TEMP/craftworks-signature.bin"
       - name: Draft a release for review
         working-directory: artifacts
         run: |
@@ -188,5 +290,11 @@ jobs:
           fi
           pre=()
           [[ "$VERSION" != *-* ]] || pre=(--prerelease)
-          gh release create "$tag" --verify-tag --draft --title "Craftworks $VERSION" \
-            --generate-notes "${pre[@]}" -- *
+          tag_args=(--verify-tag)
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            bash "$GITHUB_WORKSPACE/packaging/signing/check-version-tag.sh" "$tag" "$GITHUB_SHA"
+            tag_args=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$tag" "${tag_args[@]}" --draft --title "Craftworks $VERSION" \
+            --notes "Windows and Linux installers for Craftworks $VERSION. Checksums and their Ed25519 signature are included." \
+            "${pre[@]}" -- *

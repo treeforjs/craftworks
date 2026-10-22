@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
-use crate::install::{download_dir, download_path, prepare_dir};
+use crate::install::{download_dir, staging_dir};
 use crate::release::MAX_ASSET_BYTES;
 use crate::verify::{self, Hasher, MAX_LIST_BYTES, Sums};
 use crate::{AppInfo, Applied, Arch, Asset, Error, InstallKind, Prepared, Release, Source, Version, newest};
@@ -214,6 +214,12 @@ impl Updater {
     }
 }
 
+impl Drop for Updater {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 struct WakeOnDrop(Option<Arc<dyn Fn() + Send + Sync>>);
 
 impl Drop for WakeOnDrop {
@@ -266,34 +272,47 @@ fn fetch(
     let sig = source.get(&sig_url, MAX_LIST_BYTES)?;
     let sig = String::from_utf8(sig).map_err(|_| Error::Verify("the signature isn't text".into()))?;
     let sums = Sums::verified(&list, &sig, key)?;
-    if sums.get(&asset.name).is_none() {
-        return Err(Error::Verify(format!("{} isn't in the signed checksum list", asset.name)));
+    let digest = *sums.get(&asset.name).ok_or_else(|| Error::Verify(format!("{} isn't in the signed checksum list", asset.name)))?;
+    let name = std::path::Path::new(&asset.name);
+    if name.components().count() != 1 || name.file_name().and_then(|name| name.to_str()) != Some(asset.name.as_str()) {
+        return Err(Error::Invalid("the update asset is not a single file name".into()));
     }
-
-    let dir = download_dir(app, &kind)?;
-    prepare_dir(&dir, &kind)?;
-    let path = download_path(&dir, &kind, &asset.name);
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Error::Cancelled);
+    }
+    let stage = staging_dir(&download_dir(app, &kind)?)?;
+    let path = stage.path().join(&asset.name);
+    let mut received: u64 = 0;
     let result = (|| {
-        let mut file = std::fs::File::create(&path).map_err(|e| Error::Install(format!("can't write {}: {e}", path.display())))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|e| Error::Install(format!("can't write {}: {e}", path.display())))?;
         let mut hasher = Hasher::default();
-        let mut received: u64 = 0;
         let limit = asset.size.clamp(1, MAX_ASSET_BYTES);
         source.download(&asset.url, limit, &mut |chunk| {
             if cancel.load(Ordering::Relaxed) {
                 return Err(Error::Cancelled);
             }
+            received = received
+                .checked_add(chunk.len() as u64)
+                .filter(|n| *n <= limit)
+                .ok_or_else(|| Error::Verify("the update exceeds its advertised size".into()))?;
             hasher.update(chunk);
             file.write_all(chunk).map_err(|e| Error::Install(format!("can't write the download: {e}")))?;
-            received = received.saturating_add(chunk.len() as u64);
             progress(received);
             Ok(())
         })?;
         file.sync_all().map_err(|e| Error::Install(format!("can't write the download: {e}")))?;
+        if received != asset.size {
+            return Err(Error::Verify("the update size does not match the release".into()));
+        }
         verify::check(&sums, &asset.name, &hasher.finish())
     })();
-    if let Err(e) = result {
-        let _ = std::fs::remove_file(&path);
-        return Err(e);
-    }
-    Ok(Prepared { kind, file: path, version: release.version.clone() })
+    result?;
+    Ok(Prepared::verified(stage, kind, path, release.version.clone(), digest, received))
 }

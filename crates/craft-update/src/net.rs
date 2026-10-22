@@ -62,7 +62,7 @@ impl Source for GitHub {
     fn get(&self, url: &str, limit: u64) -> Result<Vec<u8>, Error> {
         let agent = self.agent(Some(Duration::from_secs(20)))?;
         let mut response = self.call(&agent, url)?;
-        response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| Error::Network(e.to_string()))
+        read_body(response.body_mut(), limit)
     }
 
     fn download(&self, url: &str, limit: u64, sink: &mut dyn FnMut(&[u8]) -> Result<(), Error>) -> Result<(), Error> {
@@ -70,37 +70,39 @@ impl Source for GitHub {
         // stalled connection still ends through the receive timeout.
         let agent = self.agent(None)?;
         let mut response = self.call(&agent, url)?;
-        let mut reader = response.body_mut().with_config().limit(limit).reader();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = reader.read(&mut buf).map_err(|e| Error::Network(e.to_string()))?;
-            if n == 0 {
-                return Ok(());
-            }
-            sink(buf.get(..n).unwrap_or_default())?;
+        stream_body(response.body_mut(), limit, sink)
+    }
+}
+
+#[cfg(feature = "github")]
+fn read_body(body: &mut ureq::Body, limit: u64) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    stream_body(body, limit, &mut |chunk| {
+        bytes.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "github")]
+fn stream_body(body: &mut ureq::Body, limit: u64, sink: &mut dyn FnMut(&[u8]) -> Result<(), Error>) -> Result<(), Error> {
+    // ureq errors once its limit is reached, even if the next read would be EOF.
+    // Allow one probe byte, but never deliver bytes beyond the caller's inclusive cap.
+    let mut reader = body.with_config().limit(limit.saturating_add(1)).reader();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut received = 0u64;
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| Error::Network(e.to_string()))?;
+        if n == 0 {
+            return Ok(());
         }
+        received = received.checked_add(n as u64).ok_or_else(|| Error::Invalid("The response body is too large.".into()))?;
+        if received > limit {
+            return Err(Error::Invalid("The response body is larger than its allowed size.".into()));
+        }
+        sink(buf.get(..n).unwrap_or_default())?;
     }
 }
 
 #[cfg(all(test, feature = "github"))]
-mod tests {
-    use super::*;
-
-    /// Live: asks GitHub over TLS with the OS's roots (`cargo test -p craft-update -- --ignored`).
-    #[test]
-    #[ignore = "needs network access"]
-    fn github_answers_with_a_release_list() {
-        let body = GitHub::new("craft-update-test").get("https://api.github.com/repos/treeforjs/pdfcraft/releases?per_page=5", 4 << 20).unwrap();
-        assert!(body.starts_with(b"["), "{}", String::from_utf8_lossy(&body));
-        assert!(matches!(GitHub::new("x").get("http://api.github.com/", 10), Err(Error::Invalid(_))));
-        // Release downloads redirect to GitHub's object storage; the redirect is followed.
-        let mut got = Vec::new();
-        GitHub::new("craft-update-test")
-            .download("https://github.com/goreleaser/nfpm/releases/download/v2.47.0/checksums.txt", 1 << 20, &mut |c| {
-                got.extend_from_slice(c);
-                Ok(())
-            })
-            .unwrap();
-        assert!(String::from_utf8_lossy(&got).contains("nfpm_2.47.0"), "{}", String::from_utf8_lossy(&got));
-    }
-}
+mod tests;

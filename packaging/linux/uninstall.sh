@@ -10,7 +10,7 @@ if [[ -L "$BIN" && "$(readlink -- "$BIN")" == "$DEST/craftworks" ]]; then
   rm -- "$BIN"
 fi
 rm -f -- "$DATA/applications/io.github.treeforjs.craftworks.desktop"
-for file in craftworks LICENSE-MIT LICENSE-APACHE README.md uninstall.sh; do
+for file in craftworks LICENSE-MIT LICENSE-APACHE README.md THIRD-PARTY-NOTICES.txt uninstall.sh; do
   rm -f -- "$DEST/$file"
 done
 rmdir -- "$DEST" 2>/dev/null || true

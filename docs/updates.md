@@ -22,8 +22,7 @@ and update those apps automatically. Existing old zip/folder copies do not need 
 If you already generated a key, reuse it. The helpers below are for creating your first key;
 do not create another key for another user, computer or release.
 
-Run **one** of the following from a Craftworks checkout containing the launcher changes in
-[PR #8](https://github.com/treeforjs/craftworks/pull/8). The helper requires a new output folder
+Run **one** of the following from a current Craftworks checkout. The helper requires a new output folder
 outside the repository, refuses to overwrite an existing folder and prints only the public key.
 It makes no GitHub changes.
 
@@ -74,7 +73,7 @@ Repeat these settings in **all four** repositories: `treeforjs/pdfcraft`, `treef
    add `CRAFT_UPDATE_PUBLIC_KEY` with the single line from `craft-update-public-key.txt`.
    Use a **repository variable**: Linux build jobs do not enter the `release` environment.
 3. If the environment limits deployment branches/tags, allow the `release` **branch** for each
-   app. In Craftworks, allow `craftworks-v*` **tags** for the final signing job. Approve any
+   app and Craftworks. If releasing Craftworks by tag, also allow `craftworks-v*` **tags**. Approve any
    configured environment-review gate when the release run reaches it.
 
 These are two different settings: the private PEM is an **environment secret** and the public
@@ -136,11 +135,10 @@ For each app:
    stable release. Repeat for all three apps. The workflow chooses the `vX.Y.Z` tag; pushing
    an app version tag alone does not run these release workflows.
 
-The existing app workflows also build macOS, FreeBSD, Flatpak and web packages before drafting
-any release. Their macOS jobs currently request `macos-15-xlarge`, and desktop jobs check out
-`storytold/craft-fonts`. Make sure those runners and that dependency are available to the
-repositories. A queued or failed required job prevents the final draft; inspect the first run
-before assuming the signing key is the problem.
+The release workflows build Windows and Linux packages. Their early signing checks reject a
+missing or mismatched key before packaging starts. Desktop jobs check out the pinned font assets;
+that build input must be available. A queued or failed required job prevents the final
+draft; inspect the first run before assuming the signing key is the problem.
 
 Repository-specific packaging details:
 [PdfCraft](https://github.com/treeforjs/pdfcraft/blob/main/docs/releasing.md),
@@ -150,22 +148,24 @@ GitHub documents [publishing a draft release](https://docs.github.com/en/reposit
 
 ## 4. Build and publish Craftworks
 
-1. Merge [PR #8](https://github.com/treeforjs/craftworks/pull/8) so the launcher and
-   `.github/workflows/launcher-release.yml` exist on the branch being released. Configure the
-   Craftworks keys as above.
-2. In **Actions > Craftworks release > Run workflow**, select the merged branch for a build
+1. Use the reviewed `main` commit containing the launcher and its current release workflow.
+   Configure the Craftworks keys as above.
+2. In **Actions > Craftworks release > Run workflow**, select `main` for a build
    check. A manual run validates keys and uploads build artifacts; it does **not** create a
    release or run the checksum-signing job.
 3. The launcher version lives in `apps/craftworks/Cargo.toml` (initially `0.1.0`). For a later
-   release, update it and `Cargo.lock`, commit and review the change. From the reviewed commit,
-   push the matching tag:
+   release, update it and `Cargo.lock`, commit and review the change. From a clean, current
+   clone on `main`, push the reviewed commit to `release`, just as for the three apps:
 
    ```sh
-   git tag craftworks-v0.1.0
-   git push origin craftworks-v0.1.0
+   git push origin main:release
    ```
 
-   Replace `0.1.0` with the actual launcher version. The workflow rejects a mismatching tag.
+   If `release` already points at that commit, choose it in **Actions > Craftworks release >
+   Run workflow**. The release branch runs the signing preflight, builds the packages and
+   drafts `craftworks-v0.1.0` (or the current version), creating its tag at that exact commit.
+   A matching `craftworks-vX.Y.Z` tag push is also supported. Existing version tags and published
+   releases must never be moved or replaced.
 4. Wait for **Craftworks release** to build Windows x64/ARM64 and Linux x86_64/aarch64,
    sign its checksum list and create the draft. Download the draft's installer for each platform,
    install it, and test an app install and launch using the newly published app releases.
@@ -186,7 +186,6 @@ already support these optional secrets in their `release` environment:
 | Platform | Secrets |
 | --- | --- |
 | Windows | `WINDOWS_CERTIFICATE` (base64 PFX) + `WINDOWS_CERTIFICATE_PASSWORD`, or `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` |
-| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` |
 | Linux | No operating-system signing certificate needed by this workflow. |
 
 The initial Craftworks NSIS setup and executable do not yet have an Authenticode-signing step.

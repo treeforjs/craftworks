@@ -3,7 +3,8 @@
 Craftworks is the single place to install, update and open PdfCraft, VectorCraft and PhotoCraft
 on Windows and Linux. Each app keeps its own release schedule; the launcher checks the latest
 published stable GitHub Release in `treeforjs/pdfcraft`, `treeforjs/vectorcraft` and
-`treeforjs/photocraft`.
+`treeforjs/photocraft`. The same check also looks for Craftworks updates in
+`treeforjs/craftworks`, including its `craftworks-v<version>` release tags.
 
 ## Current availability
 
@@ -12,9 +13,8 @@ an Actions artifact or a draft release alone is not an installable release. Exis
 copies can still be run directly while publishing is being set up. Craftworks shows missing
 release assets without inventing a download or installing an unsigned package.
 
-The new launcher can be built from source. To distribute an installer that installs the apps,
-maintainers must complete the [step-by-step signing and publishing guide](updates.md). Release assets
-and repository secrets could not be tested from an unauthenticated checkout.
+Download the launcher from [Craftworks releases](https://github.com/treeforjs/craftworks/releases).
+Maintainers can follow the [step-by-step signing and publishing guide](updates.md) for new releases.
 
 ## Install and use
 
@@ -23,8 +23,20 @@ ARM PC. It installs into `%LOCALAPPDATA%\Programs\Craftworks` by default, adds a
 entry and appears in Windows Installed apps. No administrator access is needed. The portable
 zip can also be unpacked anywhere; app downloads still use your normal user data folder.
 
-On Linux, unpack the matching `craftworks-<version>-linux-x86_64.tar.gz` or `aarch64` tarball,
-then run:
+On Linux, download `craftworks-<version>-linux-x86_64-setup.sh` (or `aarch64` on an ARM
+computer). From the download folder, run it as your normal user:
+
+```sh
+bash craftworks-0.1.3-linux-x86_64-setup.sh --dry-run
+bash craftworks-0.1.3-linux-x86_64-setup.sh
+```
+
+Use the actual downloaded version and architecture in those commands. The setup file contains
+the prebuilt launcher and checks its bundled payload before installing. `--dry-run` previews
+the installation without writing files. No compiler or sudo is needed. It backs up an existing
+Craftworks launcher before replacement and keeps managed apps and preferences.
+
+The release also includes a tarball containing the launcher and user installer:
 
 ```sh
 cd craftworks-<version>-linux-<arch>
@@ -36,9 +48,16 @@ under `$XDG_DATA_HOME/craftworks-launcher` (normally `~/.local/share/craftworks-
 Run its `uninstall.sh` to remove the launcher. Linux releases are built on Ubuntu 22.04 and
 need a desktop with glibc 2.35 or newer and the usual X11 or Wayland/OpenGL libraries.
 
+Launch **Craftworks** from your application menu, or run `~/.local/bin/craftworks`.
+
 Open Craftworks, check for releases, then choose Install, Update or Open for each app. App
 downloads are installed for the current user. Existing MSI, distribution-package, Flatpak or
 manually unpacked installations are separate from the copies managed by Craftworks.
+
+Craftworks shows its own checking, up-to-date or update-available status beside the update
+controls. **Download Craftworks update** opens the newer release's download page. Close the
+launcher and run that version's setup as above, then reopen Craftworks. A failed launcher
+update check has its own retry action and leaves the app library available.
 
 ### Retire an old ZIP or app folder
 
@@ -163,15 +182,42 @@ workflow validates that all four public keys are present and correctly encoded. 
 `release` environment also needs `UPDATE_SIGNING_KEY`, matching its own public key, to draft a
 release with signed checksums. Operating-system code signing is separate; the initial NSIS
 packaging does not sign the executable or setup file with Authenticode.
-If the `release` environment restricts allowed branches or tags, allow the `craftworks-v*`
-release tags as well.
+If the `release` environment restricts allowed branches or tags, allow the `release` branch
+and the `craftworks-v*` release tags.
+
+## Uninstalling
+
+Open **Settings → Uninstall Craftworks…** in the installed launcher. It shows exact file and
+folder paths before the final confirmation. Removing managed binaries and deleting app data
+are separate, unchecked choices. Data deletion includes the listed standard profiles, presets,
+fonts, caches and recovery copies of unsaved documents; back them up first. Close the Craft
+apps and any other Craftworks window before removal. Portable profile data inside a managed
+installation prevents binary removal unless app-data deletion is explicitly selected.
+
+The launcher completes its own cleanup after its GUI storage has finished saving. Windows
+then runs the exact registered per-user NSIS uninstaller after the process exits; it never
+executes a registry command string or requests administrator privileges. Linux removes only
+the known launcher files, its matching command link and desktop entry. Unknown launcher files,
+custom data locations, documents outside the selected profiles and old-copy backups are kept.
+Selecting managed-app removal also cleans older PhotoCraft AppImage menu entries and their
+known icon files only when the entry points to a receipt-owned managed version. Standalone,
+changed or linked entries/icons are kept. PhotoCraft's normal Wayland icon integration stays
+available when launching a managed app.
+Ownership/lock metadata is removed only from an otherwise empty, owned library. Operating-system
+logs and installer downloads elsewhere are not erased. If a filesystem operation fails, some
+selected cleanup may already have completed; remaining files are kept and an error is shown.
+
+For older installed versions without this button, use **Windows Settings → Apps → Craftworks →
+Uninstall**, or on Linux run `bash "${XDG_DATA_HOME:-$HOME/.local/share}/craftworks-launcher/uninstall.sh"`.
+Those older uninstallers keep managed apps and profiles. Source/build copies and unpacked
+portable launchers cannot uninstall themselves; remove their own extracted folder manually
+after closing them, keeping any documents or portable profile data you need.
 
 ## First release checklist
 
 See [`updates.md`](updates.md) for Linux and Windows key-generation helpers, exact GitHub
 settings and branch/publishing steps. The helpers keep private keys outside the checkout and
-make no GitHub changes. Merge [PR #8](https://github.com/treeforjs/craftworks/pull/8) before
-tagging a release from the default branch so the launcher release workflow is available.
+make no GitHub changes. Release from the reviewed commit containing the current launcher workflow.
 
 1. Configure the app signing keys, then run each app's existing release workflow on its
    `release` branch. Those workflows create **draft** releases; a draft is not visible to
@@ -180,10 +226,12 @@ tagging a release from the default branch so the launcher release workflow is av
 2. Configure the Craftworks repository's matching public keys and its release signing secret.
 3. Bump `apps/craftworks/Cargo.toml` and update `Cargo.lock`. Run the CI checks and test a real
    signed app install and update on both Windows and Linux.
-4. Push a tag matching the launcher version, such as `craftworks-v0.1.0`.
+4. Push the reviewed commit to the `release` branch, or push a matching version tag such as
+   `craftworks-v0.1.3`.
    `launcher-release.yml` builds Windows x64 and ARM64 and Linux x86_64 and aarch64, signs the
-   checksum list, and creates a draft Craftworks release. A manual workflow dispatch builds
-   and checks artifacts without creating a release.
+   checksum list, and creates a draft Craftworks release. A manual workflow dispatch on `release`
+   also creates a draft; selecting `main` only builds and checks artifacts. Signing preflight
+   rejects missing or mismatched private/public keys before the package builds start.
 5. Download the draft installers, check installation, app launches and updates on both
    platforms, then publish the draft. Published version assets must not be replaced.
 
