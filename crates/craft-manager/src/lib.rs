@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use craft_update::{Asset, Release};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod desktop;
+#[cfg(not(target_arch = "wasm32"))]
 mod manager;
 #[cfg(not(target_arch = "wasm32"))]
 mod package;
