@@ -360,6 +360,7 @@ fn symlinked_installations_are_never_launched_or_removed() {
     assert_eq!(fs::read(outside).unwrap(), b"unrelated");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn menu_entries_follow_activation_repair_and_removal_without_overwriting_other_apps() {
     let dir = tempfile::tempdir().unwrap();
