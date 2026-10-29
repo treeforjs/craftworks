@@ -251,3 +251,22 @@ executable and its resources. PdfCraft's `models` folder must stay beside its ex
 launcher uses the verified portable package instead of invoking a system MSI or requiring
 administrator access. Linux apps use their published AppImages; distribution packages and
 Flatpak remain available independently through each app's release page.
+
+
+### Linux application menus
+
+Craftworks registers PdfCraft, VectorCraft and PhotoCraft in the current user's
+application menu after installing or updating them. Opening Craftworks also repairs
+missing entries for existing managed installations. Entries use `XDG_DATA_HOME`
+(or `~/.local/share`) and point to the active AppImage. Removing a managed app also
+removes its menu entry. Separately installed applications keep their own entries;
+Craftworks refuses to overwrite entries belonging to another library.
+
+PdfCraft's menu entry advertises PDF support and passes selected files to the app,
+so it appears in **Open With** and can be chosen as the default PDF application.
+Craftworks leaves the user's current default unchanged. On Linux, choose PdfCraft
+in the desktop's file association settings, or run:
+
+```sh
+xdg-mime default io.github.treeforjs.craftworks.pdfcraft.desktop application/pdf
+```

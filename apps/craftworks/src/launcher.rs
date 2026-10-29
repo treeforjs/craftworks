@@ -128,6 +128,7 @@ type InstalledResult = Result<Option<Installed>, Error>;
 type Initialization = Result<(Manager, Vec<(App, InstalledResult)>, Vec<String>), Error>;
 
 enum Message {
+    Notice(String),
     Initialized(Initialization),
     Checked(App, Result<Availability, Error>),
     CheckFinished,
@@ -308,6 +309,9 @@ impl Launcher {
                         }
                     }
                 }
+                if let Err(error) = manager.sync_desktop_entries() {
+                    notices.push(format!("Could not update the application menu: {error}"));
+                }
                 let installed = APPS.into_iter().map(|app| (app, manager.installed(app))).collect();
                 Ok((manager, installed, notices))
             })();
@@ -475,6 +479,7 @@ impl Launcher {
                         active.total = total;
                     }
                 }
+                Message::Notice(message) => self.notices.push(message),
                 Message::Installed(app, result) => {
                     self.active = None;
                     if let Some(view) = self.view_mut(app) {
@@ -754,6 +759,11 @@ impl Launcher {
                 },
                 &cancel,
             );
+            if result.is_ok()
+                && let Err(error) = manager.sync_desktop_entries()
+            {
+                let _ = tx.send(Message::Notice(format!("The app is installed, but its menu entry could not be updated: {error}")));
+            }
             let _ = tx.send(Message::Installed(app, result));
         });
     }
@@ -868,7 +878,13 @@ impl Launcher {
         self.active =
             Some(Active { app, label: format!("Removing {}", app.name), received: 0, total: 0, cancel: Arc::default(), cancellable: false });
         self.spawn(ctx, Job::Mutation(app), move |tx| {
-            let _ = tx.send(Message::Removed(app, manager.uninstall(app)));
+            let result = manager.uninstall(app);
+            if result.is_ok()
+                && let Err(error) = manager.sync_desktop_entries()
+            {
+                let _ = tx.send(Message::Notice(format!("The app was removed, but its menu entry could not be updated: {error}")));
+            }
+            let _ = tx.send(Message::Removed(app, result));
         });
     }
 

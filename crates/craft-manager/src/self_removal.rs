@@ -335,6 +335,11 @@ impl Plan {
             for app in APPS {
                 manager.uninstall(app)?;
             }
+            if cfg!(target_os = "linux")
+                && let Some(data) = self.desktop.as_deref().and_then(Path::parent).and_then(Path::parent)
+            {
+                manager.sync_desktop_entries_in(data)?;
+            }
         }
         if options.app_data {
             for path in &self.profiles {

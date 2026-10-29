@@ -359,3 +359,47 @@ fn symlinked_installations_are_never_launched_or_removed() {
     assert!(manager.uninstall(app()).is_err());
     assert_eq!(fs::read(outside).unwrap(), b"unrelated");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn menu_entries_follow_activation_repair_and_removal_without_overwriting_other_apps() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = trusted(&dir.path().join("library with spaces"), Arc::new(Fake::default()));
+    let data = dir.path().join("data");
+    for app in APPS {
+        let app_dir = manager.prepare_app(app).unwrap();
+        let version = app_dir.join("versions/00000000000000000001");
+        fs::create_dir(&version).unwrap();
+        fs::write(version.join(format!("{}.AppImage", app.id)), b"fixture").unwrap();
+        fs::write(app_dir.join("receipts/00000000000000000001.json"), format!(r#"{{"schema":1,"app":"{}","version":"1.0.0","slot":1}}"#, app.id))
+            .unwrap();
+    }
+    manager.sync_desktop_entries_in(&data).unwrap();
+    for app in APPS {
+        let path = data.join(format!("applications/io.github.treeforjs.craftworks.{}.desktop", app.id));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(&format!("Name={}", app.name)));
+        if app.id == "pdfcraft" {
+            assert!(text.contains("MimeType=application/pdf;\n"));
+            assert!(text.lines().any(|line| line.starts_with("Exec=") && line.ends_with(" %F")));
+        }
+        assert!(text.contains(&format!("/00000000000000000001/{}.AppImage\"", app.id)));
+        fs::remove_file(&path).unwrap();
+    }
+    manager.sync_desktop_entries_in(&data).unwrap();
+    let app = app();
+    let app_dir = manager.root().join(app.id);
+    fs::create_dir(app_dir.join("versions/00000000000000000002")).unwrap();
+    fs::write(app_dir.join(format!("versions/00000000000000000002/{}.AppImage", app.id)), b"updated").unwrap();
+    fs::write(app_dir.join("receipts/00000000000000000002.json"), format!(r#"{{"schema":1,"app":"{}","version":"2.0.0","slot":2}}"#, app.id))
+        .unwrap();
+    manager.sync_desktop_entries_in(&data).unwrap();
+    let path = data.join(format!("applications/io.github.treeforjs.craftworks.{}.desktop", app.id));
+    assert!(fs::read_to_string(&path).unwrap().contains("/00000000000000000002/"));
+    manager.uninstall(app).unwrap();
+    manager.sync_desktop_entries_in(&data).unwrap();
+    assert!(!path.exists());
+    fs::write(&path, "[Desktop Entry]\nName=Another installation\n").unwrap();
+    assert!(manager.sync_desktop_entries_in(&data).is_err());
+    assert!(fs::read_to_string(&path).unwrap().contains("Another installation"));
+}
