@@ -59,7 +59,7 @@ let app = craft_update::AppInfo {
 let mut updater = craft_update::Updater::new(app, Arc::new(craft_update::GitHub::new("PdfCraft/1.2.0")));
 updater.on_change(move || ctx.request_repaint());
 
-// Once started (never before the first frame): a background check when one is due.
+// AutoCheck defaults off. After the user opts in and startup finishes: check when due.
 if settings.updates.due(craft_update::AutoCheck::now()) { /* after START_DELAY_SECS */ updater.check(); }
 
 // Every frame: pick up news and draw `updater.state()`.
@@ -71,7 +71,11 @@ updater.apply(restart)?;
 
 The updater never blocks the UI thread: checks and downloads run on a background thread under
 `catch_unwind`, and the automatic check waits until the app has been up for a few seconds and
-runs at most once a day ([`AutoCheck`](src/schedule.rs)).
+runs at most once a day ([`AutoCheck`](src/schedule.rs)). `AutoCheck::default()` and settings
+without `enabled` leave background checks off. Explicit saved choices are preserved. Callers
+can still request a manual check with `Updater::check()`; Craftworks' launcher separately
+checks its catalogue on launch. A release request sends the caller's generic app/version
+User-Agent and normal connection information to GitHub, with no document or account payload.
 
 ## Signing releases
 

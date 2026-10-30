@@ -4,21 +4,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// Starting the app never waits on it: the app asks [`AutoCheck::due`] once it is up and, if a
 /// check is due, runs it on a background thread after [`AutoCheck::START_DELAY_SECS`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoCheck {
-    /// Look for updates automatically (Settings ▸ Updates). On by default.
+    /// Look for updates automatically (Settings ▸ Updates). Off until the user opts in.
     pub enabled: bool,
     /// When the last check finished, in seconds since 1970.
     pub last_checked: Option<u64>,
     /// A version the person chose to skip: it isn't offered again (a newer one is).
     pub skipped: Option<String>,
-}
-
-impl Default for AutoCheck {
-    fn default() -> Self {
-        AutoCheck { enabled: true, last_checked: None, skipped: None }
-    }
 }
 
 impl AutoCheck {
@@ -54,7 +48,7 @@ mod tests {
 
     #[test]
     fn a_check_is_due_once_a_day() {
-        let mut a = AutoCheck::default();
+        let mut a = AutoCheck { enabled: true, ..AutoCheck::default() };
         assert!(a.due(1_000));
         a.last_checked = Some(1_000);
         assert!(!a.due(1_000 + AutoCheck::INTERVAL_SECS - 1));
@@ -65,9 +59,23 @@ mod tests {
     }
 
     #[test]
+    fn background_checks_require_an_explicit_choice() {
+        for json in ["{}", r#"{"last_checked":1}"#, r#"{"enabled":false}"#] {
+            let saved: AutoCheck = serde_json::from_str(json).unwrap();
+            assert!(!saved.enabled, "{json}");
+            assert!(!saved.due(u64::MAX), "{json}");
+        }
+        assert!(!AutoCheck::default().due(u64::MAX));
+        let enabled: AutoCheck = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(enabled.due(1_000));
+        assert_eq!(serde_json::from_str::<AutoCheck>(&serde_json::to_string(&enabled).unwrap()).unwrap(), enabled);
+    }
+
+    #[test]
     fn skipped_versions_and_old_settings_are_read() {
         let a: AutoCheck = serde_json::from_str(r#"{"skipped":"v1.2.0"}"#).unwrap();
-        assert!(a.enabled);
+        assert!(!a.enabled);
+        assert!(!a.due(u64::MAX));
         assert!(a.is_skipped(&crate::Version::parse("1.2.0").unwrap()));
         assert!(!a.is_skipped(&crate::Version::parse("1.2.1").unwrap()));
     }

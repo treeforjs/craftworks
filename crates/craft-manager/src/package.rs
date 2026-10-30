@@ -54,7 +54,8 @@ pub(crate) fn extract_zip(download: &Path, destination: &Path, app: App, name: &
         check_cancel(cancelled)?;
         let mut entry = archive.by_index(index).map_err(zip_error)?;
         let directory = entry.is_dir();
-        let name = entry.name().trim_end_matches('/');
+        let entry_name = entry.name().map_err(zip_error)?;
+        let name = entry_name.trim_end_matches('/');
         if name.contains('\\') || name.len() > 4096 || name.is_empty() || name.split('/').any(|part| !safe_part(part)) {
             return Err(Error::Invalid("The ZIP package contains an unsafe path.".into()));
         }
